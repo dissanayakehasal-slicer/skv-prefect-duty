@@ -216,90 +216,153 @@ export const usePrefectStore = create<PrefectStore>()(
         let assigned = 0;
         let skipped = 0;
 
-        const getAssignedIds = () => {
-          const s = get();
-          const assignedSet = new Set(s.assignments.map((a) => a.prefectId));
-          // Section heads/co-heads count as assigned
-          s.sections.forEach((sec) => {
-            if (sec.headId) assignedSet.add(sec.headId);
-            if (sec.coHeadId) assignedSet.add(sec.coHeadId);
-          });
-          return assignedSet;
+        // Helper: get section grade number from section name
+        const getSectionGrade = (sectionName: string): number | null => {
+          const match = sectionName.match(/GRADE\s+(\d+)/i);
+          return match ? parseInt(match[1]) : null;
         };
 
-        const getAvailable = (filter?: { gender?: Gender; minGrade?: number }) => {
-          const assignedIds = getAssignedIds();
+        // Helper: check if prefect is eligible to lead a section
+        const isEligibleHead = (prefect: Prefect, sectionGrade: number): boolean => {
+          if (sectionGrade <= 7) return prefect.grade >= sectionGrade + 2;
+          if (sectionGrade === 8) return prefect.grade >= 10;
+          return prefect.grade === 11; // grades 9, 10, 11
+        };
+
+        // Helper: count duties for a prefect (assignments + head/co-head roles)
+        const getDutyCount = (prefectId: string): number => {
+          const s = get();
+          let count = s.assignments.filter((a) => a.prefectId === prefectId).length;
+          s.sections.forEach((sec) => {
+            if (sec.headId === prefectId) count++;
+            if (sec.coHeadId === prefectId) count++;
+          });
+          return count;
+        };
+
+        // Helper: pick best prefect from candidates (fewest duties first)
+        const pickBest = (candidates: Prefect[]): Prefect | undefined => {
+          if (candidates.length === 0) return undefined;
+          candidates.sort((a, b) => getDutyCount(a.id) - getDutyCount(b.id));
+          return candidates[0];
+        };
+
+        // Helper: get eligible prefects (excludes head prefects from normal duties)
+        const getEligible = (filter?: { gender?: Gender; minGrade?: number; excludeHeadPrefect?: boolean }) => {
           return get().prefects.filter((p) => {
-            if (assignedIds.has(p.id)) return false;
-            if (p.isHeadPrefect || p.isDeputyHeadPrefect) return false;
+            if (filter?.excludeHeadPrefect !== false && p.isHeadPrefect) return false;
             if (filter?.gender && p.gender !== filter.gender) return false;
             if (filter?.minGrade && p.grade < filter.minGrade) return false;
             return true;
           });
         };
 
-        // 1. Fill special duties first
-        const specialPlaces = state.dutyPlaces.filter((dp) => dp.isSpecial);
+        // ===== PHASE 1: Auto-assign Section Heads (male priority) =====
+        for (const section of get().sections) {
+          if (section.headId) continue; // already has head
+          const sectionGrade = getSectionGrade(section.name);
+          if (!sectionGrade) continue; // non-grade sections (A, B) skip
+
+          const candidates = getEligible({ gender: 'Male' }).filter((p) => isEligibleHead(p, sectionGrade));
+          const best = pickBest(candidates);
+          if (best) {
+            get().setSectionHead(section.id, best.id);
+            assigned++;
+          } else {
+            // Fallback: try any gender
+            const fallback = pickBest(getEligible().filter((p) => isEligibleHead(p, sectionGrade)));
+            if (fallback) {
+              get().setSectionHead(section.id, fallback.id);
+              assigned++;
+            } else {
+              skipped++;
+            }
+          }
+        }
+
+        // ===== PHASE 2: Auto-assign Co-Section Heads (female priority) =====
+        for (const section of get().sections) {
+          if (section.coHeadId) continue;
+          const sectionGrade = getSectionGrade(section.name);
+          if (!sectionGrade) continue;
+
+          const candidates = getEligible({ gender: 'Female' }).filter((p) => {
+            if (p.isHeadPrefect) return false;
+            return isEligibleHead(p, sectionGrade);
+          });
+          const best = pickBest(candidates);
+          if (best) {
+            get().setSectionCoHead(section.id, best.id);
+            assigned++;
+          } else {
+            const fallback = pickBest(getEligible().filter((p) => isEligibleHead(p, sectionGrade) && !p.isHeadPrefect));
+            if (fallback) {
+              get().setSectionCoHead(section.id, fallback.id);
+              assigned++;
+            } else {
+              skipped++;
+            }
+          }
+        }
+
+        // ===== PHASE 3: Fill special duties =====
+        const specialPlaces = get().dutyPlaces.filter((dp) => dp.isSpecial);
         for (const dp of specialPlaces) {
           const maxSlots = dp.maxPrefects || 1;
           const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
           const slotsToFill = maxSlots - currentAssignments.length;
-
           if (slotsToFill <= 0) continue;
 
           if (dp.requiredGenderBalance && maxSlots >= 2) {
-            // Try to assign one male, one female
             const currentGenders = currentAssignments.map((a) => {
-              const p = state.prefects.find((pr) => pr.id === a.prefectId);
+              const p = get().prefects.find((pr) => pr.id === a.prefectId);
               return p?.gender;
             });
-            const needMale = !currentGenders.includes('Male');
-            const needFemale = !currentGenders.includes('Female');
-
-            if (needMale) {
-              const male = getAvailable({ gender: 'Male', minGrade: 8 })[0];
-              if (male) {
-                const err = get().assignPrefect(male.id, dp.id, dp.sectionId);
+            if (!currentGenders.includes('Male')) {
+              const best = pickBest(getEligible({ gender: 'Male', minGrade: 8 }));
+              if (best) {
+                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
                 if (!err) assigned++; else skipped++;
               }
             }
-            if (needFemale) {
-              const female = getAvailable({ gender: 'Female', minGrade: 8 })[0];
-              if (female) {
-                const err = get().assignPrefect(female.id, dp.id, dp.sectionId);
+            if (!currentGenders.includes('Female')) {
+              const best = pickBest(getEligible({ gender: 'Female', minGrade: 8 }));
+              if (best) {
+                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
                 if (!err) assigned++; else skipped++;
               }
             }
           } else {
             for (let i = 0; i < slotsToFill; i++) {
-              const available = getAvailable({ minGrade: 8 });
-              if (available.length > 0) {
-                const err = get().assignPrefect(available[0].id, dp.id, dp.sectionId);
+              const best = pickBest(getEligible({ minGrade: 8 }));
+              if (best) {
+                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
                 if (!err) assigned++; else skipped++;
               }
             }
           }
         }
 
-        // 2. Fill classroom duties
-        const classPlaces = state.dutyPlaces.filter((dp) => !dp.isSpecial);
+        // ===== PHASE 4: Fill classroom duties (round-robin, balanced) =====
+        const classPlaces = get().dutyPlaces.filter((dp) => !dp.isSpecial);
         for (const dp of classPlaces) {
           const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
-          if (currentAssignments.length > 0) continue;
+          const maxSlots = dp.maxPrefects || 1;
+          if (currentAssignments.length >= maxSlots) continue;
 
           const classGrade = getClassGrade(dp.name);
           if (!classGrade) continue;
 
-          // Prefect grade must be > class grade (except grade 11 can do 10/11)
-          const available = getAvailable().filter((p) => {
+          const eligible = getEligible().filter((p) => {
+            // Check not already assigned to this exact duty place
+            if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
             if (classGrade >= 11) return p.grade === 11;
             return p.grade > classGrade;
           });
 
-          if (available.length > 0) {
-            // Prefer lowest eligible grade (closest senior)
-            available.sort((a, b) => a.grade - b.grade);
-            const err = get().assignPrefect(available[0].id, dp.id, dp.sectionId);
+          const best = pickBest(eligible);
+          if (best) {
+            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) assigned++; else skipped++;
           }
         }
