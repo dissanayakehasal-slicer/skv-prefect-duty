@@ -373,26 +373,13 @@ export const usePrefectStore = create<PrefectStore>()(
       validate: () => {
         const state = get();
         const issues: ValidationIssue[] = [];
-        const assignedPrefectIds = new Set<string>();
 
-        // Check assignments
+        // Check assignments for grade mismatches
         for (const assignment of state.assignments) {
           const prefect = state.prefects.find((p) => p.id === assignment.prefectId);
           const dp = state.dutyPlaces.find((d) => d.id === assignment.dutyPlaceId);
           if (!prefect || !dp) continue;
 
-          // Single-duty violation
-          if (assignedPrefectIds.has(prefect.id)) {
-            issues.push({
-              type: 'error',
-              category: 'single_duty',
-              message: `${prefect.name} has multiple duty assignments`,
-              prefectId: prefect.id,
-            });
-          }
-          assignedPrefectIds.add(prefect.id);
-
-          // Grade mismatch
           const classGrade = getClassGrade(dp.name);
           if (classGrade) {
             if (classGrade >= 11) {
@@ -415,7 +402,6 @@ export const usePrefectStore = create<PrefectStore>()(
               });
             }
 
-            // Same-age check (same grade except grade 11)
             if (prefect.grade === classGrade && prefect.grade !== 11) {
               issues.push({
                 type: 'error',
@@ -437,9 +423,7 @@ export const usePrefectStore = create<PrefectStore>()(
               const p = state.prefects.find((pr) => pr.id === a.prefectId);
               return p?.gender;
             });
-            const hasMale = genders.includes('Male');
-            const hasFemale = genders.includes('Female');
-            if (!hasMale || !hasFemale) {
+            if (!genders.includes('Male') || !genders.includes('Female')) {
               issues.push({
                 type: 'warning',
                 category: 'gender_violation',
@@ -464,25 +448,16 @@ export const usePrefectStore = create<PrefectStore>()(
           }
         }
 
-        // Section head/co-head single-duty check
+        // Sections without head/co-head
         for (const section of state.sections) {
-          if (section.headId && assignedPrefectIds.has(section.headId)) {
-            const p = state.prefects.find((pr) => pr.id === section.headId);
-            issues.push({
-              type: 'error',
-              category: 'single_duty',
-              message: `${p?.name} is Section Head of ${section.name} AND has a duty assignment`,
-              prefectId: section.headId,
-            });
-          }
-          if (section.coHeadId && assignedPrefectIds.has(section.coHeadId)) {
-            const p = state.prefects.find((pr) => pr.id === section.coHeadId);
-            issues.push({
-              type: 'error',
-              category: 'single_duty',
-              message: `${p?.name} is Co-Head of ${section.name} AND has a duty assignment`,
-              prefectId: section.coHeadId,
-            });
+          const sectionGrade = section.name.match(/GRADE\s+(\d+)/i);
+          if (sectionGrade) {
+            if (!section.headId) {
+              issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Section Head` });
+            }
+            if (!section.coHeadId) {
+              issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Co-Section Head` });
+            }
           }
         }
 
@@ -495,14 +470,18 @@ export const usePrefectStore = create<PrefectStore>()(
 
       getAvailablePrefects: () => {
         const state = get();
-        const assignedIds = new Set(state.assignments.map((a) => a.prefectId));
-        state.sections.forEach((sec) => {
-          if (sec.headId) assignedIds.add(sec.headId);
-          if (sec.coHeadId) assignedIds.add(sec.coHeadId);
-        });
-        return state.prefects.filter(
-          (p) => !assignedIds.has(p.id) && !p.isHeadPrefect && !p.isDeputyHeadPrefect
-        );
+        // Return all non-head prefects, sorted by fewest duties
+        const dutyCount = (id: string) => {
+          let c = state.assignments.filter((a) => a.prefectId === id).length;
+          state.sections.forEach((sec) => {
+            if (sec.headId === id) c++;
+            if (sec.coHeadId === id) c++;
+          });
+          return c;
+        };
+        return state.prefects
+          .filter((p) => !p.isHeadPrefect)
+          .sort((a, b) => dutyCount(a.id) - dutyCount(b.id));
       },
 
       isSectionHeadOrCoHead: (prefectId) => {
