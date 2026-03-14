@@ -168,14 +168,11 @@ export const usePrefectStore = create<PrefectStore>()(
         const state = get();
         const prefect = state.prefects.find((p) => p.id === prefectId);
         if (!prefect) return 'Prefect not found';
-        if (prefect.isHeadPrefect || prefect.isDeputyHeadPrefect) return 'Head/Deputy Head excluded from duty';
+        if (prefect.isHeadPrefect) return 'Head Prefect excluded from normal duty';
 
-        // Single-duty check
-        const existing = state.assignments.find((a) => a.prefectId === prefectId);
-        if (existing) return 'Prefect already has a duty assignment';
-
-        // Check section head/co-head
-        if (state.isSectionHeadOrCoHead(prefectId)) return 'Prefect is a Section Head/Co-Head (counts as duty)';
+        // Check if already assigned to this exact duty place
+        const duplicate = state.assignments.find((a) => a.prefectId === prefectId && a.dutyPlaceId === dutyPlaceId);
+        if (duplicate) return 'Prefect already assigned to this duty place';
 
         const dp = state.dutyPlaces.find((d) => d.id === dutyPlaceId);
         if (!dp) return 'Duty place not found';
