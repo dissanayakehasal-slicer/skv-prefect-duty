@@ -14,7 +14,227 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      assignments: {
+        Row: {
+          assigned_at: string
+          assigned_by: Database["public"]["Enums"]["assignment_method"]
+          duty_place_id: string
+          id: string
+          prefect_id: string
+          slot_index: number
+        }
+        Insert: {
+          assigned_at?: string
+          assigned_by?: Database["public"]["Enums"]["assignment_method"]
+          duty_place_id: string
+          id?: string
+          prefect_id: string
+          slot_index?: number
+        }
+        Update: {
+          assigned_at?: string
+          assigned_by?: Database["public"]["Enums"]["assignment_method"]
+          duty_place_id?: string
+          id?: string
+          prefect_id?: string
+          slot_index?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assignments_duty_place_id_fkey"
+            columns: ["duty_place_id"]
+            isOneToOne: false
+            referencedRelation: "duty_places"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assignments_prefect_id_fkey"
+            columns: ["prefect_id"]
+            isOneToOne: false
+            referencedRelation: "prefects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      audit_logs: {
+        Row: {
+          action: string
+          admin_id: string | null
+          created_at: string
+          details: Json | null
+          entity_id: string | null
+          entity_type: string
+          id: string
+        }
+        Insert: {
+          action: string
+          admin_id?: string | null
+          created_at?: string
+          details?: Json | null
+          entity_id?: string | null
+          entity_type: string
+          id?: string
+        }
+        Update: {
+          action?: string
+          admin_id?: string | null
+          created_at?: string
+          details?: Json | null
+          entity_id?: string | null
+          entity_type?: string
+          id?: string
+        }
+        Relationships: []
+      }
+      duty_places: {
+        Row: {
+          created_at: string
+          gender_requirement: string | null
+          grade_requirement: string | null
+          id: string
+          mandatory_slots: number
+          max_prefects: number
+          name: string
+          required_gender_balance: boolean
+          same_grade_if_multiple: boolean
+          section_id: string | null
+          type: Database["public"]["Enums"]["duty_place_type"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          gender_requirement?: string | null
+          grade_requirement?: string | null
+          id?: string
+          mandatory_slots?: number
+          max_prefects?: number
+          name: string
+          required_gender_balance?: boolean
+          same_grade_if_multiple?: boolean
+          section_id?: string | null
+          type?: Database["public"]["Enums"]["duty_place_type"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          gender_requirement?: string | null
+          grade_requirement?: string | null
+          id?: string
+          mandatory_slots?: number
+          max_prefects?: number
+          name?: string
+          required_gender_balance?: boolean
+          same_grade_if_multiple?: boolean
+          section_id?: string | null
+          type?: Database["public"]["Enums"]["duty_place_type"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "duty_places_section_id_fkey"
+            columns: ["section_id"]
+            isOneToOne: false
+            referencedRelation: "sections"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      prefects: {
+        Row: {
+          active: boolean
+          created_at: string
+          gender: string
+          grade: number
+          id: string
+          name: string
+          reg_number: string
+          role: Database["public"]["Enums"]["prefect_role"]
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          gender: string
+          grade: number
+          id?: string
+          name: string
+          reg_number: string
+          role?: Database["public"]["Enums"]["prefect_role"]
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          gender?: string
+          grade?: number
+          id?: string
+          name?: string
+          reg_number?: string
+          role?: Database["public"]["Enums"]["prefect_role"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      sections: {
+        Row: {
+          co_head_prefect_id: string | null
+          created_at: string
+          head_prefect_id: string | null
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          co_head_prefect_id?: string | null
+          created_at?: string
+          head_prefect_id?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          co_head_prefect_id?: string | null
+          created_at?: string
+          head_prefect_id?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sections_co_head_prefect_id_fkey"
+            columns: ["co_head_prefect_id"]
+            isOneToOne: false
+            referencedRelation: "prefects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sections_head_prefect_id_fkey"
+            columns: ["head_prefect_id"]
+            isOneToOne: false
+            referencedRelation: "prefects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      settings: {
+        Row: {
+          key: string
+          updated_at: string
+          value: string
+        }
+        Insert: {
+          key: string
+          updated_at?: string
+          value: string
+        }
+        Update: {
+          key?: string
+          updated_at?: string
+          value?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -23,7 +243,9 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      assignment_method: "auto" | "manual"
+      duty_place_type: "classroom" | "special" | "inspection"
+      prefect_role: "prefect" | "head_prefect" | "deputy_head_prefect"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +372,10 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      assignment_method: ["auto", "manual"],
+      duty_place_type: ["classroom", "special", "inspection"],
+      prefect_role: ["prefect", "head_prefect", "deputy_head_prefect"],
+    },
   },
 } as const
