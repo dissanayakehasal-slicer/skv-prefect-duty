@@ -16,10 +16,14 @@ export interface DutyPlace {
   id: string;
   name: string;
   sectionId: string;
-  isSpecial?: boolean; // Main Gate, Shine Room, etc.
+  isSpecial?: boolean;
   isMandatory?: boolean;
   requiredGenderBalance?: boolean;
   maxPrefects?: number;
+  genderRequirement?: string;
+  gradeRequirement?: string;
+  sameGradeIfMultiple?: boolean;
+  mandatorySlots?: number;
 }
 
 export interface Section {

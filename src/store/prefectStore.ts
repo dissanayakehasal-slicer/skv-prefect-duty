@@ -1,39 +1,51 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { supabase } from '@/integrations/supabase/client';
 import {
   Prefect, Section, DutyPlace, Assignment, ValidationIssue,
-  generateId, calculateLevel, DEFAULT_SECTIONS, DEFAULT_DUTY_PLACES, Gender,
+  generateId, calculateLevel, Gender,
 } from '@/types/prefect';
+
+interface AutoAssignReport {
+  assigned: number;
+  skipped: number;
+  vacancies: { placeName: string; slotsNeeded: number }[];
+  violations: string[];
+}
 
 interface PrefectStore {
   prefects: Prefect[];
   sections: Section[];
   dutyPlaces: DutyPlace[];
   assignments: Assignment[];
+  loading: boolean;
+  initialized: boolean;
+
+  // Data loading
+  loadFromDB: () => Promise<void>;
 
   // Prefect actions
-  addPrefect: (p: Omit<Prefect, 'id' | 'level'>) => void;
-  updatePrefect: (id: string, p: Partial<Prefect>) => void;
-  removePrefect: (id: string) => void;
-  importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => void;
+  addPrefect: (p: Omit<Prefect, 'id' | 'level'>) => Promise<void>;
+  updatePrefect: (id: string, p: Partial<Prefect>) => Promise<void>;
+  removePrefect: (id: string) => Promise<string | null>;
+  importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<void>;
 
   // Section actions
-  addSection: (name: string) => void;
-  removeSection: (id: string) => void;
-  setSectionHead: (sectionId: string, prefectId: string | undefined) => void;
-  setSectionCoHead: (sectionId: string, prefectId: string | undefined) => void;
+  addSection: (name: string) => Promise<void>;
+  removeSection: (id: string) => Promise<void>;
+  setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
+  setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
 
   // Duty place actions
-  addDutyPlace: (dp: Omit<DutyPlace, 'id'>) => void;
-  removeDutyPlace: (id: string) => void;
-  updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => void;
+  addDutyPlace: (dp: Omit<DutyPlace, 'id'>) => Promise<void>;
+  removeDutyPlace: (id: string) => Promise<void>;
+  updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => Promise<void>;
 
   // Assignment actions
   assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => string | null;
-  removeAssignment: (assignmentId: string) => void;
+  removeAssignment: (assignmentId: string) => Promise<void>;
   swapAssignments: (a1Id: string, a2Id: string) => void;
-  clearAllAssignments: () => void;
-  autoAssign: () => { assigned: number; skipped: number };
+  clearAllAssignments: () => Promise<void>;
+  autoAssign: () => AutoAssignReport;
 
   // Validation
   validate: () => ValidationIssue[];
@@ -43,451 +55,665 @@ interface PrefectStore {
   getAssignedPrefect: (dutyPlaceId: string) => Assignment[];
   getAvailablePrefects: () => Prefect[];
   isSectionHeadOrCoHead: (prefectId: string) => boolean;
+  getDutyCount: (prefectId: string) => number;
 }
-
-function initDutyPlaces(): DutyPlace[] {
-  return DEFAULT_DUTY_PLACES.map((dp) => ({ ...dp, id: generateId() }));
-}
-
-function initSections(dutyPlaces: DutyPlace[]): Section[] {
-  return DEFAULT_SECTIONS.map((s) => ({
-    ...s,
-    dutyPlaceIds: dutyPlaces.filter((dp) => dp.sectionId === s.id).map((dp) => dp.id),
-  }));
-}
-
-const initialDutyPlaces = initDutyPlaces();
-const initialSections = initSections(initialDutyPlaces);
 
 function getClassGrade(dutyPlaceName: string): number | null {
   const match = dutyPlaceName.match(/^(\d+)[A-E]$/);
   return match ? parseInt(match[1]) : null;
 }
 
-export const usePrefectStore = create<PrefectStore>()(
-  persist(
-    (set, get) => ({
-      prefects: [],
-      sections: initialSections,
-      dutyPlaces: initialDutyPlaces,
+function getSectionGrade(sectionName: string): number | null {
+  const match = sectionName.match(/GRADE\s+(\d+)/i);
+  return match ? parseInt(match[1]) : null;
+}
+
+function isEligibleHead(prefectGrade: number, sectionGrade: number): boolean {
+  if (sectionGrade <= 7) return prefectGrade >= sectionGrade + 2;
+  if (sectionGrade === 8) return prefectGrade >= 10;
+  return prefectGrade === 11; // grades 9, 10, 11
+}
+
+export const usePrefectStore = create<PrefectStore>()((set, get) => ({
+  prefects: [],
+  sections: [],
+  dutyPlaces: [],
+  assignments: [],
+  loading: false,
+  initialized: false,
+
+  loadFromDB: async () => {
+    set({ loading: true });
+    try {
+      const [prefectsRes, sectionsRes, dutyPlacesRes, assignmentsRes] = await Promise.all([
+        supabase.from('prefects').select('*').eq('active', true),
+        supabase.from('sections').select('*'),
+        supabase.from('duty_places').select('*'),
+        supabase.from('assignments').select('*'),
+      ]);
+
+      const prefects: Prefect[] = (prefectsRes.data || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        regNo: p.reg_number,
+        grade: p.grade,
+        gender: (p.gender === 'M' ? 'Male' : 'Female') as Gender,
+        level: calculateLevel(p.grade),
+        isHeadPrefect: p.role === 'head_prefect',
+        isDeputyHeadPrefect: p.role === 'deputy_head_prefect',
+      }));
+
+      const sections: Section[] = (sectionsRes.data || []).map((s) => ({
+        id: s.id,
+        name: s.name,
+        headId: s.head_prefect_id || undefined,
+        coHeadId: s.co_head_prefect_id || undefined,
+        dutyPlaceIds: (dutyPlacesRes.data || []).filter((dp) => dp.section_id === s.id).map((dp) => dp.id),
+      }));
+
+      const dutyPlaces: DutyPlace[] = (dutyPlacesRes.data || []).map((dp) => ({
+        id: dp.id,
+        name: dp.name,
+        sectionId: dp.section_id || '',
+        isSpecial: dp.type === 'special' || dp.type === 'inspection',
+        isMandatory: dp.mandatory_slots > 0,
+        requiredGenderBalance: dp.required_gender_balance,
+        maxPrefects: dp.max_prefects,
+        genderRequirement: dp.gender_requirement || undefined,
+        gradeRequirement: dp.grade_requirement || undefined,
+        sameGradeIfMultiple: dp.same_grade_if_multiple,
+        mandatorySlots: dp.mandatory_slots,
+      }));
+
+      const assignments: Assignment[] = (assignmentsRes.data || []).map((a) => ({
+        id: a.id,
+        prefectId: a.prefect_id,
+        dutyPlaceId: a.duty_place_id,
+        sectionId: dutyPlaces.find((dp) => dp.id === a.duty_place_id)?.sectionId || '',
+      }));
+
+      set({ prefects, sections, dutyPlaces, assignments, loading: false, initialized: true });
+    } catch (err) {
+      console.error('Failed to load from DB:', err);
+      set({ loading: false });
+    }
+  },
+
+  addPrefect: async (p) => {
+    const { data, error } = await supabase.from('prefects').insert({
+      name: p.name,
+      reg_number: p.regNo,
+      grade: p.grade,
+      gender: p.gender === 'Male' ? 'M' : 'F',
+      role: p.isHeadPrefect ? 'head_prefect' : p.isDeputyHeadPrefect ? 'deputy_head_prefect' : 'prefect',
+    }).select().single();
+
+    if (error) { console.error(error); return; }
+    if (!data) return;
+
+    const prefect: Prefect = {
+      id: data.id,
+      name: data.name,
+      regNo: data.reg_number,
+      grade: data.grade,
+      gender: p.gender,
+      level: calculateLevel(data.grade),
+      isHeadPrefect: data.role === 'head_prefect',
+      isDeputyHeadPrefect: data.role === 'deputy_head_prefect',
+    };
+    set((s) => ({ prefects: [...s.prefects, prefect] }));
+  },
+
+  updatePrefect: async (id, updates) => {
+    const dbUpdates: Record<string, unknown> = {};
+    if (updates.name !== undefined) dbUpdates.name = updates.name;
+    if (updates.regNo !== undefined) dbUpdates.reg_number = updates.regNo;
+    if (updates.grade !== undefined) dbUpdates.grade = updates.grade;
+    if (updates.gender !== undefined) dbUpdates.gender = updates.gender === 'Male' ? 'M' : 'F';
+    if (updates.isHeadPrefect !== undefined || updates.isDeputyHeadPrefect !== undefined) {
+      const current = get().prefects.find((p) => p.id === id);
+      const isHP = updates.isHeadPrefect ?? current?.isHeadPrefect;
+      const isDHP = updates.isDeputyHeadPrefect ?? current?.isDeputyHeadPrefect;
+      dbUpdates.role = isHP ? 'head_prefect' : isDHP ? 'deputy_head_prefect' : 'prefect';
+    }
+
+    await supabase.from('prefects').update(dbUpdates).eq('id', id);
+
+    set((s) => ({
+      prefects: s.prefects.map((p) =>
+        p.id === id
+          ? { ...p, ...updates, level: updates.grade ? calculateLevel(updates.grade) : p.level }
+          : p
+      ),
+    }));
+  },
+
+  removePrefect: async (id) => {
+    // Check if prefect has assignments (ON DELETE RESTRICT will block)
+    const state = get();
+    const hasAssignment = state.assignments.some((a) => a.prefectId === id);
+    const isLeader = state.sections.some((s) => s.headId === id || s.coHeadId === id);
+
+    if (hasAssignment || isLeader) {
+      return 'Cannot delete: prefect has active assignments or leadership roles. Remove those first.';
+    }
+
+    const { error } = await supabase.from('prefects').update({ active: false }).eq('id', id);
+    if (error) return 'Failed to remove prefect: ' + error.message;
+
+    set((s) => ({ prefects: s.prefects.filter((p) => p.id !== id) }));
+    return null;
+  },
+
+  importPrefects: async (prefects) => {
+    const rows = prefects.map((p) => ({
+      name: p.name,
+      reg_number: p.regNo,
+      grade: p.grade,
+      gender: p.gender === 'Male' ? 'M' : 'F',
+      role: (p.isHeadPrefect ? 'head_prefect' : p.isDeputyHeadPrefect ? 'deputy_head_prefect' : 'prefect') as 'prefect' | 'head_prefect' | 'deputy_head_prefect',
+    }));
+
+    const { data, error } = await supabase.from('prefects').insert(rows).select();
+    if (error) { console.error(error); return; }
+    if (!data) return;
+
+    const newPrefects: Prefect[] = data.map((d) => ({
+      id: d.id,
+      name: d.name,
+      regNo: d.reg_number,
+      grade: d.grade,
+      gender: (d.gender === 'M' ? 'Male' : 'Female') as Gender,
+      level: calculateLevel(d.grade),
+      isHeadPrefect: d.role === 'head_prefect',
+      isDeputyHeadPrefect: d.role === 'deputy_head_prefect',
+    }));
+    set((s) => ({ prefects: [...s.prefects, ...newPrefects] }));
+  },
+
+  addSection: async (name) => {
+    const { data, error } = await supabase.from('sections').insert({ name }).select().single();
+    if (error || !data) return;
+    set((s) => ({ sections: [...s.sections, { id: data.id, name: data.name, dutyPlaceIds: [] }] }));
+  },
+
+  removeSection: async (id) => {
+    await supabase.from('sections').delete().eq('id', id);
+    set((s) => ({
+      sections: s.sections.filter((sec) => sec.id !== id),
+      dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
+      assignments: s.assignments.filter((a) => a.sectionId !== id),
+    }));
+  },
+
+  setSectionHead: async (sectionId, prefectId) => {
+    await supabase.from('sections').update({ head_prefect_id: prefectId || null }).eq('id', sectionId);
+    set((s) => ({
+      sections: s.sections.map((sec) =>
+        sec.id === sectionId ? { ...sec, headId: prefectId } : sec
+      ),
+    }));
+  },
+
+  setSectionCoHead: async (sectionId, prefectId) => {
+    await supabase.from('sections').update({ co_head_prefect_id: prefectId || null }).eq('id', sectionId);
+    set((s) => ({
+      sections: s.sections.map((sec) =>
+        sec.id === sectionId ? { ...sec, coHeadId: prefectId } : sec
+      ),
+    }));
+  },
+
+  addDutyPlace: async (dp) => {
+    const { data, error } = await supabase.from('duty_places').insert({
+      name: dp.name,
+      section_id: dp.sectionId || null,
+      type: dp.isSpecial ? 'special' : 'classroom',
+      mandatory_slots: dp.isMandatory ? 1 : 0,
+      max_prefects: dp.maxPrefects || 1,
+      required_gender_balance: dp.requiredGenderBalance || false,
+    }).select().single();
+
+    if (error || !data) return;
+    const newDp: DutyPlace = { ...dp, id: data.id };
+    set((s) => ({
+      dutyPlaces: [...s.dutyPlaces, newDp],
+      sections: s.sections.map((sec) =>
+        sec.id === dp.sectionId ? { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, data.id] } : sec
+      ),
+    }));
+  },
+
+  removeDutyPlace: async (id) => {
+    await supabase.from('duty_places').delete().eq('id', id);
+    set((s) => ({
+      dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
+      assignments: s.assignments.filter((a) => a.dutyPlaceId !== id),
+      sections: s.sections.map((sec) => ({
+        ...sec,
+        dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id),
+      })),
+    }));
+  },
+
+  updateDutyPlace: async (id, updates) => {
+    const dbUpdates: Record<string, unknown> = {};
+    if (updates.name !== undefined) dbUpdates.name = updates.name;
+    if (updates.maxPrefects !== undefined) dbUpdates.max_prefects = updates.maxPrefects;
+    await supabase.from('duty_places').update(dbUpdates).eq('id', id);
+    set((s) => ({
+      dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? { ...dp, ...updates } : dp)),
+    }));
+  },
+
+  getDutyCount: (prefectId: string) => {
+    const s = get();
+    let count = s.assignments.filter((a) => a.prefectId === prefectId).length;
+    s.sections.forEach((sec) => {
+      if (sec.headId === prefectId) count++;
+      if (sec.coHeadId === prefectId) count++;
+    });
+    return count;
+  },
+
+  assignPrefect: (prefectId, dutyPlaceId, sectionId) => {
+    const state = get();
+    const prefect = state.prefects.find((p) => p.id === prefectId);
+    if (!prefect) return 'Prefect not found';
+    if (prefect.isHeadPrefect) return 'Head Prefect excluded from normal duty';
+
+    // Check duplicate assignment to same duty place
+    const duplicate = state.assignments.find((a) => a.prefectId === prefectId && a.dutyPlaceId === dutyPlaceId);
+    if (duplicate) return 'Prefect already assigned to this duty place';
+
+    const dp = state.dutyPlaces.find((d) => d.id === dutyPlaceId);
+    if (!dp) return 'Duty place not found';
+
+    // Max prefects check
+    const currentCount = state.assignments.filter((a) => a.dutyPlaceId === dutyPlaceId).length;
+    if (currentCount >= (dp.maxPrefects || 1)) return `Max ${dp.maxPrefects || 1} prefects for this duty`;
+
+    // Single-duty warning (manual override allowed)
+    const existingDutyCount = state.getDutyCount(prefectId);
+    if (existingDutyCount > 0) {
+      // Allow but warn — manual assignment permits multiple
+    }
+
+    const assignment: Assignment = { id: generateId(), prefectId, dutyPlaceId, sectionId };
+    set((s) => ({ assignments: [...s.assignments, assignment] }));
+
+    // Async DB insert (fire-and-forget for UI responsiveness)
+    supabase.from('assignments').insert({
+      id: assignment.id,
+      prefect_id: prefectId,
+      duty_place_id: dutyPlaceId,
+      assigned_by: 'manual',
+    }).then(({ error }) => { if (error) console.error('DB assignment insert error:', error); });
+
+    return null;
+  },
+
+  removeAssignment: async (assignmentId) => {
+    await supabase.from('assignments').delete().eq('id', assignmentId);
+    set((s) => ({ assignments: s.assignments.filter((a) => a.id !== assignmentId) }));
+  },
+
+  swapAssignments: (a1Id, a2Id) => {
+    set((s) => {
+      const a1 = s.assignments.find((a) => a.id === a1Id);
+      const a2 = s.assignments.find((a) => a.id === a2Id);
+      if (!a1 || !a2) return s;
+      return {
+        assignments: s.assignments.map((a) => {
+          if (a.id === a1Id) return { ...a, prefectId: a2.prefectId };
+          if (a.id === a2Id) return { ...a, prefectId: a1.prefectId };
+          return a;
+        }),
+      };
+    });
+  },
+
+  clearAllAssignments: async () => {
+    await supabase.from('assignments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    // Also clear section heads/co-heads
+    const state = get();
+    for (const sec of state.sections) {
+      if (sec.headId || sec.coHeadId) {
+        await supabase.from('sections').update({ head_prefect_id: null, co_head_prefect_id: null }).eq('id', sec.id);
+      }
+    }
+    set((s) => ({
       assignments: [],
+      sections: s.sections.map((sec) => ({ ...sec, headId: undefined, coHeadId: undefined })),
+    }));
+  },
 
-      addPrefect: (p) => {
-        const prefect: Prefect = { ...p, id: generateId(), level: calculateLevel(p.grade) };
-        set((s) => ({ prefects: [...s.prefects, prefect] }));
-      },
+  autoAssign: () => {
+    const report: AutoAssignReport = { assigned: 0, skipped: 0, vacancies: [], violations: [] };
 
-      updatePrefect: (id, updates) => {
-        set((s) => ({
-          prefects: s.prefects.map((p) =>
-            p.id === id
-              ? { ...p, ...updates, level: updates.grade ? calculateLevel(updates.grade) : p.level }
-              : p
-          ),
-        }));
-      },
+    const getDutyCount = (prefectId: string): number => {
+      const s = get();
+      let count = s.assignments.filter((a) => a.prefectId === prefectId).length;
+      s.sections.forEach((sec) => {
+        if (sec.headId === prefectId) count++;
+        if (sec.coHeadId === prefectId) count++;
+      });
+      return count;
+    };
 
-      removePrefect: (id) => {
-        set((s) => ({
-          prefects: s.prefects.filter((p) => p.id !== id),
-          assignments: s.assignments.filter((a) => a.prefectId !== id),
-          sections: s.sections.map((sec) => ({
-            ...sec,
-            headId: sec.headId === id ? undefined : sec.headId,
-            coHeadId: sec.coHeadId === id ? undefined : sec.coHeadId,
-          })),
-        }));
-      },
+    const pickBest = (candidates: Prefect[]): Prefect | undefined => {
+      if (candidates.length === 0) return undefined;
+      const sorted = [...candidates].sort((a, b) => getDutyCount(a.id) - getDutyCount(b.id));
+      return sorted[0];
+    };
 
-      importPrefects: (prefects) => {
-        const newPrefects = prefects.map((p) => ({
-          ...p,
-          id: generateId(),
-          level: calculateLevel(p.grade),
-        }));
-        set((s) => ({ prefects: [...s.prefects, ...newPrefects] }));
-      },
+    const isAssigned = (prefectId: string): boolean => getDutyCount(prefectId) > 0;
 
-      addSection: (name) => {
-        const id = generateId();
-        set((s) => ({ sections: [...s.sections, { id, name, dutyPlaceIds: [] }] }));
-      },
+    const getPool = (filter?: { gender?: Gender; minGrade?: number; excludeHP?: boolean; onlyUnassigned?: boolean }) => {
+      return get().prefects.filter((p) => {
+        if (p.isHeadPrefect && filter?.excludeHP !== false) return false;
+        if (filter?.gender && p.gender !== filter.gender) return false;
+        if (filter?.minGrade && p.grade < filter.minGrade) return false;
+        if (filter?.onlyUnassigned && isAssigned(p.id)) return false;
+        return true;
+      });
+    };
 
-      removeSection: (id) => {
-        set((s) => ({
-          sections: s.sections.filter((sec) => sec.id !== id),
-          dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
-          assignments: s.assignments.filter((a) => a.sectionId !== id),
-        }));
-      },
+    // ===== PHASE 1: Section Heads (male priority) =====
+    for (const section of get().sections) {
+      if (section.headId) continue;
+      const sectionGrade = getSectionGrade(section.name);
 
-      setSectionHead: (sectionId, prefectId) => {
-        set((s) => ({
-          sections: s.sections.map((sec) =>
-            sec.id === sectionId ? { ...sec, headId: prefectId } : sec
-          ),
-        }));
-      },
-
-      setSectionCoHead: (sectionId, prefectId) => {
-        set((s) => ({
-          sections: s.sections.map((sec) =>
-            sec.id === sectionId ? { ...sec, coHeadId: prefectId } : sec
-          ),
-        }));
-      },
-
-      addDutyPlace: (dp) => {
-        const newDp: DutyPlace = { ...dp, id: generateId() };
-        set((s) => ({
-          dutyPlaces: [...s.dutyPlaces, newDp],
-          sections: s.sections.map((sec) =>
-            sec.id === dp.sectionId ? { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, newDp.id] } : sec
-          ),
-        }));
-      },
-
-      removeDutyPlace: (id) => {
-        set((s) => ({
-          dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
-          assignments: s.assignments.filter((a) => a.dutyPlaceId !== id),
-          sections: s.sections.map((sec) => ({
-            ...sec,
-            dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id),
-          })),
-        }));
-      },
-
-      updateDutyPlace: (id, updates) => {
-        set((s) => ({
-          dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? { ...dp, ...updates } : dp)),
-        }));
-      },
-
-      assignPrefect: (prefectId, dutyPlaceId, sectionId) => {
-        const state = get();
-        const prefect = state.prefects.find((p) => p.id === prefectId);
-        if (!prefect) return 'Prefect not found';
-        if (prefect.isHeadPrefect) return 'Head Prefect excluded from normal duty';
-
-        // Check if already assigned to this exact duty place
-        const duplicate = state.assignments.find((a) => a.prefectId === prefectId && a.dutyPlaceId === dutyPlaceId);
-        if (duplicate) return 'Prefect already assigned to this duty place';
-
-        const dp = state.dutyPlaces.find((d) => d.id === dutyPlaceId);
-        if (!dp) return 'Duty place not found';
-
-        // Max prefects check
-        if (dp.maxPrefects) {
-          const currentCount = state.assignments.filter((a) => a.dutyPlaceId === dutyPlaceId).length;
-          if (currentCount >= dp.maxPrefects) return `Max ${dp.maxPrefects} prefects for this duty`;
-        }
-
-        const assignment: Assignment = { id: generateId(), prefectId, dutyPlaceId, sectionId };
-        set((s) => ({ assignments: [...s.assignments, assignment] }));
-        return null;
-      },
-
-      removeAssignment: (assignmentId) => {
-        set((s) => ({ assignments: s.assignments.filter((a) => a.id !== assignmentId) }));
-      },
-
-      swapAssignments: (a1Id, a2Id) => {
-        set((s) => {
-          const a1 = s.assignments.find((a) => a.id === a1Id);
-          const a2 = s.assignments.find((a) => a.id === a2Id);
-          if (!a1 || !a2) return s;
-          return {
-            assignments: s.assignments.map((a) => {
-              if (a.id === a1Id) return { ...a, prefectId: a2.prefectId };
-              if (a.id === a2Id) return { ...a, prefectId: a1.prefectId };
-              return a;
-            }),
-          };
+      const tryAssignHead = (genderFilter?: Gender, unassignedOnly?: boolean) => {
+        const candidates = getPool({
+          gender: genderFilter,
+          excludeHP: true,
+          onlyUnassigned: unassignedOnly,
+        }).filter((p) => {
+          if (p.isDeputyHeadPrefect) return true; // Deputies can be heads
+          if (sectionGrade) return isEligibleHead(p.grade, sectionGrade);
+          return p.grade >= 8; // Non-grade sections
         });
-      },
+        return pickBest(candidates);
+      };
 
-      clearAllAssignments: () => {
-        set({ assignments: [] });
-      },
+      // Try: male unassigned → male any → any unassigned → any
+      const best = tryAssignHead('Male', true) || tryAssignHead('Male', false) || tryAssignHead(undefined, true) || tryAssignHead(undefined, false);
+      if (best) {
+        get().setSectionHead(section.id, best.id);
+        report.assigned++;
+      } else {
+        report.skipped++;
+        report.vacancies.push({ placeName: `${section.name} Head`, slotsNeeded: 1 });
+      }
+    }
 
-      autoAssign: () => {
-        const state = get();
-        let assigned = 0;
-        let skipped = 0;
+    // ===== PHASE 2: Co-Section Heads (female priority) =====
+    for (const section of get().sections) {
+      if (section.coHeadId) continue;
+      const sectionGrade = getSectionGrade(section.name);
 
-        // Helper: get section grade number from section name
-        const getSectionGrade = (sectionName: string): number | null => {
-          const match = sectionName.match(/GRADE\s+(\d+)/i);
-          return match ? parseInt(match[1]) : null;
-        };
+      const tryAssignCoHead = (genderFilter?: Gender, unassignedOnly?: boolean) => {
+        const candidates = getPool({
+          gender: genderFilter,
+          excludeHP: true,
+          onlyUnassigned: unassignedOnly,
+        }).filter((p) => {
+          if (p.isHeadPrefect) return false;
+          // Don't pick someone already a section head
+          if (get().sections.some((s) => s.headId === p.id)) return false;
+          if (sectionGrade) return isEligibleHead(p.grade, sectionGrade);
+          return p.grade >= 8;
+        });
+        return pickBest(candidates);
+      };
 
-        // Helper: check if prefect is eligible to lead a section
-        const isEligibleHead = (prefect: Prefect, sectionGrade: number): boolean => {
-          if (sectionGrade <= 7) return prefect.grade >= sectionGrade + 2;
-          if (sectionGrade === 8) return prefect.grade >= 10;
-          return prefect.grade === 11; // grades 9, 10, 11
-        };
+      const best = tryAssignCoHead('Female', true) || tryAssignCoHead('Female', false) || tryAssignCoHead(undefined, true) || tryAssignCoHead(undefined, false);
+      if (best) {
+        get().setSectionCoHead(section.id, best.id);
+        report.assigned++;
+      } else {
+        report.skipped++;
+        report.vacancies.push({ placeName: `${section.name} Co-Head`, slotsNeeded: 1 });
+      }
+    }
 
-        // Helper: count duties for a prefect (assignments + head/co-head roles)
-        const getDutyCount = (prefectId: string): number => {
-          const s = get();
-          let count = s.assignments.filter((a) => a.prefectId === prefectId).length;
-          s.sections.forEach((sec) => {
-            if (sec.headId === prefectId) count++;
-            if (sec.coHeadId === prefectId) count++;
-          });
-          return count;
-        };
+    // ===== PHASE 3: Special duties =====
+    const specialOrder = ['Main Gate (Gate A)', 'Shine Room', 'Gate B', 'Ground', 'Rock Plateau', 'Prefect Duty Inspection'];
+    const specialPlaces = specialOrder
+      .map((name) => get().dutyPlaces.find((dp) => dp.name === name))
+      .filter(Boolean) as DutyPlace[];
 
-        // Helper: pick best prefect from candidates (fewest duties first)
-        const pickBest = (candidates: Prefect[]): Prefect | undefined => {
-          if (candidates.length === 0) return undefined;
-          candidates.sort((a, b) => getDutyCount(a.id) - getDutyCount(b.id));
-          return candidates[0];
-        };
+    // Add any other special places not in the explicit order
+    get().dutyPlaces.filter((dp) => dp.isSpecial && !specialOrder.includes(dp.name)).forEach((dp) => specialPlaces.push(dp));
 
-        // Helper: get eligible prefects (excludes head prefects from normal duties)
-        const getEligible = (filter?: { gender?: Gender; minGrade?: number; excludeHeadPrefect?: boolean }) => {
-          return get().prefects.filter((p) => {
-            if (filter?.excludeHeadPrefect !== false && p.isHeadPrefect) return false;
-            if (filter?.gender && p.gender !== filter.gender) return false;
-            if (filter?.minGrade && p.grade < filter.minGrade) return false;
-            return true;
-          });
-        };
+    for (const dp of specialPlaces) {
+      const maxSlots = dp.maxPrefects || 1;
+      const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
+      let slotsToFill = maxSlots - currentAssignments.length;
+      if (slotsToFill <= 0) continue;
 
-        // ===== PHASE 1: Auto-assign Section Heads (male priority) =====
-        for (const section of get().sections) {
-          if (section.headId) continue; // already has head
-          const sectionGrade = getSectionGrade(section.name);
-          if (!sectionGrade) continue; // non-grade sections (A, B) skip
+      // Main Gate special composition: 2 boys + 2 girls Grade 11
+      if (dp.name === 'Main Gate (Gate A)') {
+        const currentMales = currentAssignments.filter((a) => {
+          const p = get().prefects.find((pr) => pr.id === a.prefectId);
+          return p?.gender === 'Male';
+        }).length;
+        const currentFemales = currentAssignments.length - currentMales;
 
-          const candidates = getEligible({ gender: 'Male' }).filter((p) => isEligibleHead(p, sectionGrade));
-          const best = pickBest(candidates);
-          if (best) {
-            get().setSectionHead(section.id, best.id);
-            assigned++;
-          } else {
-            // Fallback: try any gender
-            const fallback = pickBest(getEligible().filter((p) => isEligibleHead(p, sectionGrade)));
-            if (fallback) {
-              get().setSectionHead(section.id, fallback.id);
-              assigned++;
-            } else {
-              skipped++;
-            }
-          }
-        }
+        const malesNeeded = Math.max(0, 2 - currentMales);
+        const femalesNeeded = Math.max(0, 2 - currentFemales);
 
-        // ===== PHASE 2: Auto-assign Co-Section Heads (female priority) =====
-        for (const section of get().sections) {
-          if (section.coHeadId) continue;
-          const sectionGrade = getSectionGrade(section.name);
-          if (!sectionGrade) continue;
-
-          const candidates = getEligible({ gender: 'Female' }).filter((p) => {
-            if (p.isHeadPrefect) return false;
-            return isEligibleHead(p, sectionGrade);
-          });
-          const best = pickBest(candidates);
-          if (best) {
-            get().setSectionCoHead(section.id, best.id);
-            assigned++;
-          } else {
-            const fallback = pickBest(getEligible().filter((p) => isEligibleHead(p, sectionGrade) && !p.isHeadPrefect));
-            if (fallback) {
-              get().setSectionCoHead(section.id, fallback.id);
-              assigned++;
-            } else {
-              skipped++;
-            }
-          }
-        }
-
-        // ===== PHASE 3: Fill special duties =====
-        const specialPlaces = get().dutyPlaces.filter((dp) => dp.isSpecial);
-        for (const dp of specialPlaces) {
-          const maxSlots = dp.maxPrefects || 1;
-          const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
-          const slotsToFill = maxSlots - currentAssignments.length;
-          if (slotsToFill <= 0) continue;
-
-          if (dp.requiredGenderBalance && maxSlots >= 2) {
-            const currentGenders = currentAssignments.map((a) => {
-              const p = get().prefects.find((pr) => pr.id === a.prefectId);
-              return p?.gender;
-            });
-            if (!currentGenders.includes('Male')) {
-              const best = pickBest(getEligible({ gender: 'Male', minGrade: 8 }));
-              if (best) {
-                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-                if (!err) assigned++; else skipped++;
-              }
-            }
-            if (!currentGenders.includes('Female')) {
-              const best = pickBest(getEligible({ gender: 'Female', minGrade: 8 }));
-              if (best) {
-                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-                if (!err) assigned++; else skipped++;
-              }
-            }
-          } else {
-            for (let i = 0; i < slotsToFill; i++) {
-              const best = pickBest(getEligible({ minGrade: 8 }));
-              if (best) {
-                const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-                if (!err) assigned++; else skipped++;
-              }
-            }
-          }
-        }
-
-        // ===== PHASE 4: Fill classroom duties (round-robin, balanced) =====
-        const classPlaces = get().dutyPlaces.filter((dp) => !dp.isSpecial);
-        for (const dp of classPlaces) {
-          const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
-          const maxSlots = dp.maxPrefects || 1;
-          if (currentAssignments.length >= maxSlots) continue;
-
-          const classGrade = getClassGrade(dp.name);
-          if (!classGrade) continue;
-
-          const eligible = getEligible().filter((p) => {
-            // Check not already assigned to this exact duty place
-            if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
-            if (classGrade >= 11) return p.grade === 11;
-            return p.grade > classGrade;
-          });
-
-          const best = pickBest(eligible);
+        for (let i = 0; i < malesNeeded; i++) {
+          const best = pickBest(getPool({ gender: 'Male', minGrade: 11, onlyUnassigned: true }))
+            || pickBest(getPool({ gender: 'Male', minGrade: 11 }));
           if (best) {
             const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-            if (!err) assigned++; else skipped++;
+            if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+          } else {
+            report.vacancies.push({ placeName: `${dp.name} (Male)`, slotsNeeded: 1 });
+          }
+        }
+        for (let i = 0; i < femalesNeeded; i++) {
+          const best = pickBest(getPool({ gender: 'Female', minGrade: 11, onlyUnassigned: true }))
+            || pickBest(getPool({ gender: 'Female', minGrade: 11 }));
+          if (best) {
+            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+            if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+          } else {
+            report.vacancies.push({ placeName: `${dp.name} (Female)`, slotsNeeded: 1 });
+          }
+        }
+        continue;
+      }
+
+      // Gender-specific special duties
+      const genderReq = (dp as any).genderRequirement as string | undefined;
+      const gradeReqStr = (dp as any).gradeRequirement as string | undefined;
+      const minGrade = gradeReqStr ? Math.min(...gradeReqStr.split(',').map(Number)) : 10;
+      const genderFilter = genderReq === 'M' ? 'Male' : genderReq === 'F' ? 'Female' : undefined;
+
+      for (let i = 0; i < slotsToFill; i++) {
+        // Same-grade-if-multiple check
+        if ((dp as any).sameGradeIfMultiple && currentAssignments.length > 0) {
+          const existingPrefect = get().prefects.find((p) => p.id === currentAssignments[0].prefectId);
+          if (existingPrefect) {
+            const sameGradeCandidates = getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
+              .filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id));
+            const best = pickBest(sameGradeCandidates)
+              || pickBest(getPool({ gender: genderFilter, minGrade }).filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+            if (best) {
+              const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+              if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+            } else {
+              report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
+            }
+            continue;
           }
         }
 
-        return { assigned, skipped };
-      },
+        const best = pickBest(getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
+          .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)))
+          || pickBest(getPool({ gender: genderFilter, minGrade })
+            .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+        if (best) {
+          const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+          if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+        } else {
+          report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
+        }
+      }
+    }
 
-      validate: () => {
-        const state = get();
-        const issues: ValidationIssue[] = [];
+    // ===== PHASE 4: Classroom duties (Grade 11 down to 4) =====
+    // First pass: prefer unassigned prefects
+    // Second pass: allow already-assigned prefects (round-robin)
+    for (const pass of [true, false]) {
+      const classPlaces = get().dutyPlaces
+        .filter((dp) => !dp.isSpecial)
+        .sort((a, b) => {
+          const gA = getClassGrade(a.name) || 0;
+          const gB = getClassGrade(b.name) || 0;
+          return gB - gA; // Grade 11 first
+        });
 
-        // Check assignments for grade mismatches
-        for (const assignment of state.assignments) {
-          const prefect = state.prefects.find((p) => p.id === assignment.prefectId);
-          const dp = state.dutyPlaces.find((d) => d.id === assignment.dutyPlaceId);
-          if (!prefect || !dp) continue;
+      for (const dp of classPlaces) {
+        const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
+        const maxSlots = dp.maxPrefects || 1;
+        if (currentAssignments.length >= maxSlots) continue;
 
-          const classGrade = getClassGrade(dp.name);
-          if (classGrade) {
-            if (classGrade >= 11) {
-              if (prefect.grade !== 11) {
-                issues.push({
-                  type: 'error',
-                  category: 'grade_mismatch',
-                  message: `${prefect.name} (Grade ${prefect.grade}) assigned to ${dp.name} — only Grade 11 allowed`,
-                  prefectId: prefect.id,
-                  dutyPlaceId: dp.id,
-                });
-              }
-            } else if (prefect.grade <= classGrade) {
-              issues.push({
-                type: 'error',
-                category: 'grade_mismatch',
-                message: `${prefect.name} (Grade ${prefect.grade}) cannot be assigned to ${dp.name} — must be senior`,
-                prefectId: prefect.id,
-                dutyPlaceId: dp.id,
-              });
-            }
+        // On second pass, only fill mandatory slots that are still empty
+        if (!pass && !dp.isMandatory && currentAssignments.length > 0) continue;
 
-            if (prefect.grade === classGrade && prefect.grade !== 11) {
-              issues.push({
-                type: 'error',
-                category: 'same_age',
-                message: `${prefect.name} (Grade ${prefect.grade}) same grade as ${dp.name}`,
-                prefectId: prefect.id,
-                dutyPlaceId: dp.id,
-              });
-            }
+        const classGrade = getClassGrade(dp.name);
+        if (!classGrade) continue;
+
+        const eligible = getPool({ excludeHP: true, onlyUnassigned: pass }).filter((p) => {
+          // Prevent duplicate assignment to same place
+          if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
+          // Same-age exclusion (except Grade 11)
+          if (classGrade >= 11) return p.grade === 11;
+          if (p.grade <= classGrade) return false; // Must be senior
+          return true;
+        });
+
+        const slotsToFill = maxSlots - get().assignments.filter((a) => a.dutyPlaceId === dp.id).length;
+        for (let i = 0; i < slotsToFill; i++) {
+          const best = pickBest(eligible.filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+          if (best) {
+            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+            if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+          } else if (dp.isMandatory && get().assignments.filter((a) => a.dutyPlaceId === dp.id).length === 0) {
+            report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
           }
         }
+      }
+    }
 
-        // Gender balance check for special duties
-        const specialDps = state.dutyPlaces.filter((dp) => dp.requiredGenderBalance);
-        for (const dp of specialDps) {
-          const dpAssignments = state.assignments.filter((a) => a.dutyPlaceId === dp.id);
-          if (dpAssignments.length >= 2) {
-            const genders = dpAssignments.map((a) => {
-              const p = state.prefects.find((pr) => pr.id === a.prefectId);
-              return p?.gender;
-            });
-            if (!genders.includes('Male') || !genders.includes('Female')) {
-              issues.push({
-                type: 'warning',
-                category: 'gender_violation',
-                message: `${dp.name} requires gender balance`,
-                dutyPlaceId: dp.id,
-              });
-            }
-          }
-        }
+    return report;
+  },
 
-        // Vacant mandatory slots
-        const mandatoryDps = state.dutyPlaces.filter((dp) => dp.isMandatory);
-        for (const dp of mandatoryDps) {
-          const dpAssignments = state.assignments.filter((a) => a.dutyPlaceId === dp.id);
-          if (dpAssignments.length === 0) {
+  validate: () => {
+    const state = get();
+    const issues: ValidationIssue[] = [];
+
+    // Check assignments for grade mismatches
+    for (const assignment of state.assignments) {
+      const prefect = state.prefects.find((p) => p.id === assignment.prefectId);
+      const dp = state.dutyPlaces.find((d) => d.id === assignment.dutyPlaceId);
+      if (!prefect || !dp) continue;
+
+      const classGrade = getClassGrade(dp.name);
+      if (classGrade) {
+        if (classGrade >= 11) {
+          if (prefect.grade !== 11) {
             issues.push({
-              type: 'warning',
-              category: 'vacant_mandatory',
-              message: `${dp.name} (mandatory) has no prefect assigned`,
-              dutyPlaceId: dp.id,
+              type: 'error', category: 'grade_mismatch',
+              message: `${prefect.name} (Grade ${prefect.grade}) assigned to ${dp.name} — only Grade 11 allowed`,
+              prefectId: prefect.id, dutyPlaceId: dp.id,
             });
           }
-        }
-
-        // Sections without head/co-head
-        for (const section of state.sections) {
-          const sectionGrade = section.name.match(/GRADE\s+(\d+)/i);
-          if (sectionGrade) {
-            if (!section.headId) {
-              issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Section Head` });
-            }
-            if (!section.coHeadId) {
-              issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Co-Section Head` });
-            }
-          }
-        }
-
-        return issues;
-      },
-
-      getPrefectDuty: (prefectId) => get().assignments.find((a) => a.prefectId === prefectId),
-
-      getAssignedPrefect: (dutyPlaceId) => get().assignments.filter((a) => a.dutyPlaceId === dutyPlaceId),
-
-      getAvailablePrefects: () => {
-        const state = get();
-        // Return all non-head prefects, sorted by fewest duties
-        const dutyCount = (id: string) => {
-          let c = state.assignments.filter((a) => a.prefectId === id).length;
-          state.sections.forEach((sec) => {
-            if (sec.headId === id) c++;
-            if (sec.coHeadId === id) c++;
+        } else if (prefect.grade <= classGrade) {
+          issues.push({
+            type: 'error', category: 'grade_mismatch',
+            message: `${prefect.name} (Grade ${prefect.grade}) cannot be assigned to ${dp.name} — must be senior`,
+            prefectId: prefect.id, dutyPlaceId: dp.id,
           });
-          return c;
-        };
-        return state.prefects
-          .filter((p) => !p.isHeadPrefect)
-          .sort((a, b) => dutyCount(a.id) - dutyCount(b.id));
-      },
+        }
 
-      isSectionHeadOrCoHead: (prefectId) => {
-        return get().sections.some((s) => s.headId === prefectId || s.coHeadId === prefectId);
-      },
-    }),
-    { name: 'prefect-duty-store' }
-  )
-);
+        if (prefect.grade === classGrade && prefect.grade !== 11) {
+          issues.push({
+            type: 'error', category: 'same_age',
+            message: `${prefect.name} (Grade ${prefect.grade}) same grade as ${dp.name}`,
+            prefectId: prefect.id, dutyPlaceId: dp.id,
+          });
+        }
+      }
+    }
+
+    // Gender balance check for special duties
+    const specialDps = state.dutyPlaces.filter((dp) => dp.requiredGenderBalance);
+    for (const dp of specialDps) {
+      const dpAssignments = state.assignments.filter((a) => a.dutyPlaceId === dp.id);
+      if (dpAssignments.length >= 2) {
+        const genders = dpAssignments.map((a) => {
+          const p = state.prefects.find((pr) => pr.id === a.prefectId);
+          return p?.gender;
+        });
+        if (!genders.includes('Male') || !genders.includes('Female')) {
+          issues.push({
+            type: 'warning', category: 'gender_violation',
+            message: `${dp.name} requires gender balance`, dutyPlaceId: dp.id,
+          });
+        }
+      }
+    }
+
+    // Vacant mandatory slots
+    const mandatoryDps = state.dutyPlaces.filter((dp) => dp.isMandatory);
+    for (const dp of mandatoryDps) {
+      const dpAssignments = state.assignments.filter((a) => a.dutyPlaceId === dp.id);
+      if (dpAssignments.length === 0) {
+        issues.push({
+          type: 'warning', category: 'vacant_mandatory',
+          message: `${dp.name} (mandatory) has no prefect assigned`, dutyPlaceId: dp.id,
+        });
+      }
+    }
+
+    // Sections without head/co-head
+    for (const section of state.sections) {
+      if (!section.headId) {
+        issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Section Head` });
+      }
+      if (!section.coHeadId) {
+        issues.push({ type: 'warning', category: 'vacant_mandatory', message: `${section.name} has no Co-Section Head` });
+      }
+    }
+
+    return issues;
+  },
+
+  getPrefectDuty: (prefectId) => get().assignments.find((a) => a.prefectId === prefectId),
+
+  getAssignedPrefect: (dutyPlaceId) => get().assignments.filter((a) => a.dutyPlaceId === dutyPlaceId),
+
+  getAvailablePrefects: () => {
+    const state = get();
+    const dutyCount = (id: string) => {
+      let c = state.assignments.filter((a) => a.prefectId === id).length;
+      state.sections.forEach((sec) => {
+        if (sec.headId === id) c++;
+        if (sec.coHeadId === id) c++;
+      });
+      return c;
+    };
+    return state.prefects
+      .filter((p) => !p.isHeadPrefect)
+      .sort((a, b) => dutyCount(a.id) - dutyCount(b.id));
+  },
+
+  isSectionHeadOrCoHead: (prefectId) => {
+    return get().sections.some((s) => s.headId === prefectId || s.coHeadId === prefectId);
+  },
+}));

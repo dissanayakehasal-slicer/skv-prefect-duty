@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PrefectsTab } from '@/components/PrefectsTab';
 import { SectionsTab } from '@/components/SectionsTab';
 import { AssignmentsTab } from '@/components/AssignmentsTab';
 import { ValidationPanel } from '@/components/ValidationPanel';
+import { AdminLogin } from '@/components/AdminLogin';
 import { exportPDF } from '@/utils/exportPdf';
 import { Button } from '@/components/ui/button';
 import { usePrefectStore } from '@/store/prefectStore';
@@ -19,9 +20,22 @@ type TabId = typeof TABS[number]['id'];
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<TabId>('prefects');
-  const { prefects, assignments, validate } = usePrefectStore();
+  const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('admin_authenticated') === 'true');
+  const { prefects, assignments, validate, loadFromDB, loading, initialized } = usePrefectStore();
   const issues = validate();
   const errorCount = issues.filter((i) => i.type === 'error').length;
+
+  useEffect(() => {
+    if (authenticated && !initialized) loadFromDB();
+  }, [authenticated, initialized, loadFromDB]);
+
+  if (!authenticated) {
+    return <AdminLogin onAuthenticated={() => setAuthenticated(true)} />;
+  }
+
+  if (loading && !initialized) {
+    return <div className="min-h-screen bg-background flex items-center justify-center"><p className="text-muted-foreground">Loading...</p></div>;
+  }
 
   return (
     <div className="min-h-screen bg-background">

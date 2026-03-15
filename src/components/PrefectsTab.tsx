@@ -162,7 +162,7 @@ export function PrefectsTab() {
                   </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => startEdit(p)}><Edit2 className="h-4 w-4" /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => { removePrefect(p.id); toast.success('Removed'); }}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                    <Button variant="ghost" size="sm" onClick={async () => { const err = await removePrefect(p.id); if (err) toast.error(err); else toast.success('Removed'); }}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                   </TableCell>
                 </TableRow>
               );
