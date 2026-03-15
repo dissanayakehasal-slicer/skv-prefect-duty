@@ -23,6 +23,14 @@ const Index = () => {
   const issues = validate();
   const errorCount = issues.filter((i) => i.type === 'error').length;
 
+  useEffect(() => {
+    if (!initialized) loadFromDB();
+  }, [initialized, loadFromDB]);
+
+  if (loading && !initialized) {
+    return <div className="min-h-screen bg-background flex items-center justify-center"><p className="text-muted-foreground">Loading...</p></div>;
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
