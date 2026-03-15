@@ -15,7 +15,12 @@ export function AssignmentsTab() {
 
   const handleAutoAssign = () => {
     const result = autoAssign();
-    toast.success(`Auto-assigned ${result.assigned} prefects (${result.skipped} skipped)`);
+    const msg = `Auto-assigned ${result.assigned} (${result.skipped} skipped)`;
+    const vacMsg = result.vacancies.length > 0 ? ` | ${result.vacancies.length} vacancies remaining` : '';
+    toast.success(msg + vacMsg);
+    if (result.violations.length > 0) {
+      toast.warning(`${result.violations.length} violations detected — check Validation tab`);
+    }
   };
 
   const handleAssign = (dutyPlaceId: string, sectionId: string) => {
