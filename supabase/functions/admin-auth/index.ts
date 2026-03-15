@@ -19,6 +19,17 @@ serve(async (req) => {
 
     const { action, password, newPassword } = await req.json();
 
+    // One-time init: hash the default password if not already hashed
+    if (action === 'init') {
+      const defaultPassword = 'SKV#1902';
+      const hash = await bcrypt.hash(defaultPassword);
+      await supabase.from('settings').update({ value: hash }).eq('key', 'admin_password_hash');
+      await supabase.from('settings').update({ value: 'false' }).eq('key', 'admin_password_changed');
+      return new Response(JSON.stringify({ success: true, message: 'Admin password initialized' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     if (action === 'verify') {
       const { data: setting } = await supabase
         .from('settings')
