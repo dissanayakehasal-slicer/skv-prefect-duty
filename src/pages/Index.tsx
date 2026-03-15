@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PrefectsTab } from '@/components/PrefectsTab';
 import { SectionsTab } from '@/components/SectionsTab';
 import { AssignmentsTab } from '@/components/AssignmentsTab';
@@ -19,7 +19,7 @@ type TabId = typeof TABS[number]['id'];
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<TabId>('prefects');
-  const { prefects, assignments, validate } = usePrefectStore();
+  const { prefects, assignments, validate, loadFromDB, loading, initialized } = usePrefectStore();
   const issues = validate();
   const errorCount = issues.filter((i) => i.type === 'error').length;
 
