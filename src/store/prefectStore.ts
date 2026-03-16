@@ -30,7 +30,7 @@ interface PrefectStore {
   importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<void>;
 
   // Section actions
-  addSection: (name: string) => Promise<void>;
+  addSection: (name: string) => Promise<string | null>;
   removeSection: (id: string) => Promise<void>;
   renameSection: (id: string, name: string) => Promise<void>;
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
