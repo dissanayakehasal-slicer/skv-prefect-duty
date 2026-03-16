@@ -437,8 +437,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         return pickBest(candidates);
       };
 
-      // Try: male unassigned → male any → any unassigned → any
-      const best = tryAssignHead('Male', true) || tryAssignHead('Male', false) || tryAssignHead(undefined, true) || tryAssignHead(undefined, false);
+      // Try: male unassigned → any unassigned (single-duty rule: never assign already-assigned)
+      const best = tryAssignHead('Male', true) || tryAssignHead(undefined, true);
       if (best) {
         get().setSectionHead(section.id, best.id);
         report.assigned++;
