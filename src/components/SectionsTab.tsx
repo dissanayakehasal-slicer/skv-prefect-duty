@@ -163,7 +163,18 @@ export function SectionsTab() {
       <div className="flex items-center gap-3">
         <h2 className="text-xl font-bold text-foreground flex-1">Sections & Duty Places</h2>
         <Input placeholder="New section name" value={newSectionName} onChange={(e) => setNewSectionName(e.target.value)} className="w-48" />
-        <Button size="sm" onClick={() => { if (!newSectionName) return; addSection(newSectionName); setNewSectionName(''); toast.success('Section added'); }}>
+        <Button
+          size="sm"
+          onClick={async () => {
+            const error = await addSection(newSectionName);
+            if (error) {
+              toast.error(error);
+              return;
+            }
+            setNewSectionName('');
+            toast.success('Section added');
+          }}
+        >
           <Plus className="h-4 w-4 mr-1" /> Add Section
         </Button>
       </div>
