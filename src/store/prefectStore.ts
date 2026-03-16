@@ -303,6 +303,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   removeDutyPlace: async (id) => {
+    // Delete assignments first (FK constraint)
+    await supabase.from('assignments').delete().eq('duty_place_id', id);
     await supabase.from('duty_places').delete().eq('id', id);
     set((s) => ({
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
