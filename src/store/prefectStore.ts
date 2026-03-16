@@ -617,63 +617,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       }
     }
 
-    // ===== PHASE 5: No Prefect Left Without a Duty =====
-    // Round-robin distribute any remaining unassigned prefects across classrooms
-    {
-      const unassigned = get().prefects.filter((p) => {
-        if (p.isHeadPrefect) return false; // Head Prefects are excluded
-        const dutyCount = get().assignments.filter((a) => a.prefectId === p.id).length;
-        const isHead = get().sections.some((s) => s.headId === p.id || s.coHeadId === p.id);
-        return dutyCount === 0 && !isHead;
-      });
-
-      if (unassigned.length > 0) {
-        const classPlaces = get().dutyPlaces
-          .filter((dp) => !dp.isSpecial)
-          .sort((a, b) => {
-            const gA = getClassGrade(a.name) || 0;
-            const gB = getClassGrade(b.name) || 0;
-            return gB - gA;
-          });
-
-        if (classPlaces.length > 0) {
-          let classIndex = 0;
-          const remaining = [...unassigned];
-
-          while (remaining.length > 0) {
-            const dp = classPlaces[classIndex % classPlaces.length];
-            const classGrade = getClassGrade(dp.name);
-
-            // Find a suitable prefect for this classroom
-            const candidateIdx = remaining.findIndex((p) => {
-              if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
-              if (!classGrade) return true;
-              if (classGrade >= 11) return p.grade === 11;
-              if (p.grade <= classGrade) return false;
-              return true;
-            });
-
-            if (candidateIdx !== -1) {
-              const candidate = remaining[candidateIdx];
-              // Bypass maxPrefects cap — directly create the assignment
-              const newAssignment: Assignment = {
-                id: generateId(),
-                prefectId: candidate.id,
-                dutyPlaceId: dp.id,
-                sectionId: dp.sectionId,
-              };
-              set((s) => ({ assignments: [...s.assignments, newAssignment] }));
-              report.assigned++;
-              remaining.splice(candidateIdx, 1);
-            }
-
-            classIndex++;
-            // Safety: if we've looped through all classes without assigning anyone, break
-            if (classIndex > remaining.length * classPlaces.length + classPlaces.length) break;
-          }
-        }
-      }
-    }
+    // Phase 4 round-robin already ensures no prefect is left without a duty.
+    // Any remaining unassigned prefects couldn't fit due to grade restrictions.
 
     return report;
   },
