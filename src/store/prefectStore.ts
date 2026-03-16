@@ -32,6 +32,7 @@ interface PrefectStore {
   // Section actions
   addSection: (name: string) => Promise<void>;
   removeSection: (id: string) => Promise<void>;
+  renameSection: (id: string, name: string) => Promise<void>;
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
   setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
 
@@ -238,11 +239,28 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   removeSection: async (id) => {
+    const state = get();
+    // Get all duty places in this section
+    const sectionDpIds = state.dutyPlaces.filter((dp) => dp.sectionId === id).map((dp) => dp.id);
+    // Delete assignments for those duty places
+    if (sectionDpIds.length > 0) {
+      await supabase.from('assignments').delete().in('duty_place_id', sectionDpIds);
+      await supabase.from('duty_places').delete().in('id', sectionDpIds);
+    }
+    // Clear head/co-head references then delete section
+    await supabase.from('sections').update({ head_prefect_id: null, co_head_prefect_id: null }).eq('id', id);
     await supabase.from('sections').delete().eq('id', id);
     set((s) => ({
       sections: s.sections.filter((sec) => sec.id !== id),
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
-      assignments: s.assignments.filter((a) => a.sectionId !== id),
+      assignments: s.assignments.filter((a) => !sectionDpIds.includes(a.dutyPlaceId)),
+    }));
+  },
+
+  renameSection: async (id, name) => {
+    await supabase.from('sections').update({ name }).eq('id', id);
+    set((s) => ({
+      sections: s.sections.map((sec) => sec.id === id ? { ...sec, name } : sec),
     }));
   },
 
@@ -285,6 +303,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   removeDutyPlace: async (id) => {
+    // Delete assignments first (FK constraint)
+    await supabase.from('assignments').delete().eq('duty_place_id', id);
     await supabase.from('duty_places').delete().eq('id', id);
     set((s) => ({
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
@@ -300,10 +320,41 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const dbUpdates: Record<string, unknown> = {};
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.maxPrefects !== undefined) dbUpdates.max_prefects = updates.maxPrefects;
-    await supabase.from('duty_places').update(dbUpdates).eq('id', id);
-    set((s) => ({
-      dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? { ...dp, ...updates } : dp)),
-    }));
+    if (updates.sectionId !== undefined) dbUpdates.section_id = updates.sectionId || null;
+    if (updates.isSpecial !== undefined) dbUpdates.type = updates.isSpecial ? 'special' : 'classroom';
+    if (updates.isMandatory !== undefined) dbUpdates.mandatory_slots = updates.isMandatory ? 1 : 0;
+    if (updates.requiredGenderBalance !== undefined) dbUpdates.required_gender_balance = updates.requiredGenderBalance;
+    if (updates.genderRequirement !== undefined) dbUpdates.gender_requirement = updates.genderRequirement || null;
+    if (updates.gradeRequirement !== undefined) dbUpdates.grade_requirement = updates.gradeRequirement || null;
+    if (updates.sameGradeIfMultiple !== undefined) dbUpdates.same_grade_if_multiple = updates.sameGradeIfMultiple;
+    
+    if (Object.keys(dbUpdates).length > 0) {
+      await supabase.from('duty_places').update(dbUpdates).eq('id', id);
+    }
+    
+    set((s) => {
+      const oldDp = s.dutyPlaces.find((dp) => dp.id === id);
+      const newDp = { ...oldDp!, ...updates };
+      
+      // Update section dutyPlaceIds if section changed
+      let newSections = s.sections;
+      if (updates.sectionId !== undefined && oldDp && oldDp.sectionId !== updates.sectionId) {
+        newSections = newSections.map((sec) => {
+          if (sec.id === oldDp.sectionId) {
+            return { ...sec, dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id) };
+          }
+          if (sec.id === updates.sectionId) {
+            return { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, id] };
+          }
+          return sec;
+        });
+      }
+      
+      return {
+        dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? newDp : dp)),
+        sections: newSections,
+      };
+    });
   },
 
   getDutyCount: (prefectId: string) => {
