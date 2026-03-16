@@ -61,13 +61,18 @@ serve(async (req) => {
     }
 
     if (action === 'verify') {
-      const { data: setting } = await supabase
+      let { data: setting } = await supabase
         .from('settings').select('value').eq('key', 'admin_password_hash').single();
 
-      if (!setting) {
-        return new Response(JSON.stringify({ success: false, error: 'No admin password configured' }), {
-          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+      if (!setting || !setting.value) {
+        // Auto-seed default password on first use
+        const defaultHash = await hashPassword('SKV#1902');
+        await supabase.from('settings').upsert({ key: 'admin_password_hash', value: defaultHash });
+        await supabase.from('settings').upsert({ key: 'admin_password_changed', value: 'false' });
+        // Re-fetch
+        const { data: seeded } = await supabase
+          .from('settings').select('value').eq('key', 'admin_password_hash').single();
+        setting = seeded;
       }
 
       const valid = await verifyPassword(password, setting.value);
