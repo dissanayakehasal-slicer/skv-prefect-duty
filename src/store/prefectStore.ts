@@ -233,9 +233,38 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   addSection: async (name) => {
-    const { data, error } = await supabase.from('sections').insert({ name }).select().single();
-    if (error || !data) return;
-    set((s) => ({ sections: [...s.sections, { id: data.id, name: data.name, dutyPlaceIds: [] }] }));
+    const trimmedName = name.trim();
+    if (!trimmedName) return 'Section name is required';
+
+    const { data, error } = await supabase
+      .from('sections')
+      .insert({ name: trimmedName })
+      .select('id, name, head_prefect_id, co_head_prefect_id')
+      .single();
+
+    if (error) {
+      console.error('Failed to add section:', error);
+      return error.message;
+    }
+
+    if (!data) {
+      return 'Section was not created';
+    }
+
+    set((s) => ({
+      sections: [
+        ...s.sections,
+        {
+          id: data.id,
+          name: data.name,
+          headId: data.head_prefect_id || undefined,
+          coHeadId: data.co_head_prefect_id || undefined,
+          dutyPlaceIds: [],
+        },
+      ],
+    }));
+
+    return null;
   },
 
   removeSection: async (id) => {
