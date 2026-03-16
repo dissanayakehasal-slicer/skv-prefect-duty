@@ -239,11 +239,28 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   removeSection: async (id) => {
+    const state = get();
+    // Get all duty places in this section
+    const sectionDpIds = state.dutyPlaces.filter((dp) => dp.sectionId === id).map((dp) => dp.id);
+    // Delete assignments for those duty places
+    if (sectionDpIds.length > 0) {
+      await supabase.from('assignments').delete().in('duty_place_id', sectionDpIds);
+      await supabase.from('duty_places').delete().in('id', sectionDpIds);
+    }
+    // Clear head/co-head references then delete section
+    await supabase.from('sections').update({ head_prefect_id: null, co_head_prefect_id: null }).eq('id', id);
     await supabase.from('sections').delete().eq('id', id);
     set((s) => ({
       sections: s.sections.filter((sec) => sec.id !== id),
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
-      assignments: s.assignments.filter((a) => a.sectionId !== id),
+      assignments: s.assignments.filter((a) => !sectionDpIds.includes(a.dutyPlaceId)),
+    }));
+  },
+
+  renameSection: async (id, name) => {
+    await supabase.from('sections').update({ name }).eq('id', id);
+    set((s) => ({
+      sections: s.sections.map((sec) => sec.id === id ? { ...sec, name } : sec),
     }));
   },
 
