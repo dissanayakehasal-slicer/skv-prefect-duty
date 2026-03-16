@@ -552,10 +552,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           }
         }
 
+        // Single-duty rule: only unassigned prefects
         const best = pickBest(getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
-          .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)))
-          || pickBest(getPool({ gender: genderFilter, minGrade })
-            .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+          .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
         if (best) {
           const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
           if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
