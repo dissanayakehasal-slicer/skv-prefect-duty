@@ -541,8 +541,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           if (existingPrefect) {
             const sameGradeCandidates = getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
               .filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id));
-            const best = pickBest(sameGradeCandidates)
-              || pickBest(getPool({ gender: genderFilter, minGrade }).filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+            const best = pickBest(sameGradeCandidates);
             if (best) {
               const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
               if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
