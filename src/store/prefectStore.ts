@@ -32,6 +32,7 @@ interface PrefectStore {
   // Section actions
   addSection: (name: string) => Promise<void>;
   removeSection: (id: string) => Promise<void>;
+  renameSection: (id: string, name: string) => Promise<void>;
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
   setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<void>;
 
