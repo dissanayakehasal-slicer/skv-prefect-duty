@@ -564,10 +564,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       }
     }
 
-    // ===== PHASE 4: Classroom duties (Grade 11 down to 4) =====
-    // First pass: prefer unassigned prefects
-    // Second pass: allow already-assigned prefects (round-robin)
-    for (const pass of [true, false]) {
+    // ===== PHASE 4: Classroom duties — round-robin distribution =====
+    // Single-duty rule: only assign prefects with zero duties
+    {
       const classPlaces = get().dutyPlaces
         .filter((dp) => !dp.isSpecial)
         .sort((a, b) => {
@@ -576,32 +575,41 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           return gB - gA; // Grade 11 first
         });
 
-      for (const dp of classPlaces) {
-        const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
-        const maxSlots = dp.maxPrefects || 1;
-        if (currentAssignments.length >= maxSlots) continue;
+      // Collect all unassigned prefects (excluding Head Prefects)
+      let unassignedPool = getPool({ excludeHP: true, onlyUnassigned: true });
 
-        // On second pass, only fill mandatory slots that are still empty
-        if (!pass && !dp.isMandatory && currentAssignments.length > 0) continue;
+      // Round-robin: cycle through classrooms, assign one per classroom per round
+      let assignedThisRound = true;
+      while (assignedThisRound && unassignedPool.length > 0) {
+        assignedThisRound = false;
+        for (const dp of classPlaces) {
+          if (unassignedPool.length === 0) break;
 
-        const classGrade = getClassGrade(dp.name);
-        if (!classGrade) continue;
+          const classGrade = getClassGrade(dp.name);
+          if (!classGrade) continue;
 
-        const eligible = getPool({ excludeHP: true, onlyUnassigned: pass }).filter((p) => {
-          // Prevent duplicate assignment to same place
-          if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
-          // Same-age exclusion (except Grade 11)
-          if (classGrade >= 11) return p.grade === 11;
-          if (p.grade <= classGrade) return false; // Must be senior
-          return true;
-        });
+          // Find eligible candidates for this classroom
+          const eligible = unassignedPool.filter((p) => {
+            if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
+            if (classGrade >= 11) return p.grade === 11;
+            if (p.grade <= classGrade) return false;
+            return true;
+          });
 
-        const slotsToFill = maxSlots - get().assignments.filter((a) => a.dutyPlaceId === dp.id).length;
-        for (let i = 0; i < slotsToFill; i++) {
-          const best = pickBest(eligible.filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+          const best = pickBest(eligible);
           if (best) {
-            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-            if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+            // Bypass maxPrefects for round-robin — directly create assignment
+            const newAssignment: Assignment = {
+              id: generateId(),
+              prefectId: best.id,
+              dutyPlaceId: dp.id,
+              sectionId: dp.sectionId,
+            };
+            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
+            report.assigned++;
+            assignedThisRound = true;
+            // Refresh unassigned pool after each assignment
+            unassignedPool = getPool({ excludeHP: true, onlyUnassigned: true });
           } else if (dp.isMandatory && get().assignments.filter((a) => a.dutyPlaceId === dp.id).length === 0) {
             report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
           }
