@@ -468,7 +468,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         return pickBest(candidates);
       };
 
-      const best = tryAssignCoHead('Female', true) || tryAssignCoHead('Female', false) || tryAssignCoHead(undefined, true) || tryAssignCoHead(undefined, false);
+      // Single-duty rule: only unassigned prefects
+      const best = tryAssignCoHead('Female', true) || tryAssignCoHead(undefined, true);
       if (best) {
         get().setSectionCoHead(section.id, best.id);
         report.assigned++;
