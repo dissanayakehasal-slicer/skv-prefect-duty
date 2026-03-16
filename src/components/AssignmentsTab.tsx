@@ -3,15 +3,19 @@ import { usePrefectStore } from '@/store/prefectStore';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Wand2, Trash2, ArrowRightLeft, UserPlus, UserMinus, AlertCircle } from 'lucide-react';
+import { Wand2, Trash2, UserPlus, AlertCircle, CheckCircle2, Circle } from 'lucide-react';
 import { toast } from 'sonner';
 
 export function AssignmentsTab() {
   const store = usePrefectStore();
-  const { sections, dutyPlaces, prefects, assignments, assignPrefect, removeAssignment, autoAssign, clearAllAssignments, getAvailablePrefects, getAssignedPrefect, setSectionHead, setSectionCoHead } = store;
+  const { sections, dutyPlaces, prefects, assignments, assignPrefect, removeAssignment, autoAssign, clearAllAssignments, getAvailablePrefects, getAssignedPrefect, getDutyCount } = store;
   const [selectedPrefect, setSelectedPrefect] = useState<string>('');
 
   const available = getAvailablePrefects();
+
+  // On-duty vs free prefects
+  const onDutyPrefects = prefects.filter((p) => getDutyCount(p.id) > 0);
+  const freePrefects = prefects.filter((p) => !p.isHeadPrefect && getDutyCount(p.id) === 0);
 
   const handleAutoAssign = () => {
     const result = autoAssign();
@@ -56,9 +60,40 @@ export function AssignmentsTab() {
         </div>
       </div>
 
+      {/* On-Duty / Free Prefects Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="rounded-lg border bg-card p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-600" />
+            <span className="font-semibold text-sm text-foreground">On Duty ({onDutyPrefects.length})</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+            {onDutyPrefects.length === 0 && <span className="text-xs text-muted-foreground italic">No prefects on duty yet</span>}
+            {onDutyPrefects.map((p) => (
+              <span key={p.id} className="inline-flex items-center bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded-full px-2 py-0.5 text-xs font-medium">
+                {p.name} (G{p.grade})
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border bg-card p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <Circle className="h-4 w-4 text-amber-500" />
+            <span className="font-semibold text-sm text-foreground">Free ({freePrefects.length})</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+            {freePrefects.length === 0 && <span className="text-xs text-muted-foreground italic">All prefects assigned!</span>}
+            {freePrefects.map((p) => (
+              <span key={p.id} className="inline-flex items-center bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded-full px-2 py-0.5 text-xs font-medium">
+                {p.name} (G{p.grade})
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <p className="text-sm text-muted-foreground">
-        Available prefects: <strong>{available.length}</strong> / {prefects.filter((p) => !p.isHeadPrefect && !p.isDeputyHeadPrefect).length} | 
-        Assignments: <strong>{assignments.length}</strong>
+        Total: <strong>{prefects.length}</strong> prefects | On Duty: <strong>{onDutyPrefects.length}</strong> | Free: <strong>{freePrefects.length}</strong> | Assignments: <strong>{assignments.length}</strong>
       </p>
 
       {sections.map((section) => {
@@ -82,8 +117,9 @@ export function AssignmentsTab() {
               {sectionDps.map((dp) => {
                 const dpAssignments = getAssignedPrefect(dp.id);
                 const maxSlots = dp.maxPrefects || 1;
-                const isFull = dpAssignments.length >= maxSlots;
-                const isEmpty = dpAssignments.length === 0;
+                // Allow assigning beyond maxPrefects for manual override (round-robin may have exceeded it)
+                const currentCount = dpAssignments.length;
+                const isEmpty = currentCount === 0;
 
                 return (
                   <div key={dp.id} className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${isEmpty && dp.isMandatory ? 'border-destructive/50 bg-destructive/5' : 'bg-muted/30'}`}>
@@ -107,11 +143,9 @@ export function AssignmentsTab() {
                     </div>
 
                     <div className="min-w-[80px] text-right">
-                      {!isFull && (
-                        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleAssign(dp.id, section.id)} disabled={!selectedPrefect}>
-                          <UserPlus className="h-3 w-3 mr-1" /> Assign
-                        </Button>
-                      )}
+                      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleAssign(dp.id, section.id)} disabled={!selectedPrefect}>
+                        <UserPlus className="h-3 w-3 mr-1" /> Assign
+                      </Button>
                     </div>
                   </div>
                 );

@@ -437,8 +437,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         return pickBest(candidates);
       };
 
-      // Try: male unassigned → male any → any unassigned → any
-      const best = tryAssignHead('Male', true) || tryAssignHead('Male', false) || tryAssignHead(undefined, true) || tryAssignHead(undefined, false);
+      // Try: male unassigned → any unassigned (single-duty rule: never assign already-assigned)
+      const best = tryAssignHead('Male', true) || tryAssignHead(undefined, true);
       if (best) {
         get().setSectionHead(section.id, best.id);
         report.assigned++;
@@ -468,7 +468,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         return pickBest(candidates);
       };
 
-      const best = tryAssignCoHead('Female', true) || tryAssignCoHead('Female', false) || tryAssignCoHead(undefined, true) || tryAssignCoHead(undefined, false);
+      // Single-duty rule: only unassigned prefects
+      const best = tryAssignCoHead('Female', true) || tryAssignCoHead(undefined, true);
       if (best) {
         get().setSectionCoHead(section.id, best.id);
         report.assigned++;
@@ -505,8 +506,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         const femalesNeeded = Math.max(0, 2 - currentFemales);
 
         for (let i = 0; i < malesNeeded; i++) {
-          const best = pickBest(getPool({ gender: 'Male', minGrade: 11, onlyUnassigned: true }))
-            || pickBest(getPool({ gender: 'Male', minGrade: 11 }));
+          const best = pickBest(getPool({ gender: 'Male', minGrade: 11, onlyUnassigned: true }));
           if (best) {
             const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
@@ -515,8 +515,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           }
         }
         for (let i = 0; i < femalesNeeded; i++) {
-          const best = pickBest(getPool({ gender: 'Female', minGrade: 11, onlyUnassigned: true }))
-            || pickBest(getPool({ gender: 'Female', minGrade: 11 }));
+          const best = pickBest(getPool({ gender: 'Female', minGrade: 11, onlyUnassigned: true }));
           if (best) {
             const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
@@ -540,8 +539,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           if (existingPrefect) {
             const sameGradeCandidates = getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
               .filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id));
-            const best = pickBest(sameGradeCandidates)
-              || pickBest(getPool({ gender: genderFilter, minGrade }).filter((p) => p.grade === existingPrefect.grade && !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+            const best = pickBest(sameGradeCandidates);
             if (best) {
               const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
               if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
@@ -552,10 +550,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           }
         }
 
+        // Single-duty rule: only unassigned prefects
         const best = pickBest(getPool({ gender: genderFilter, minGrade, onlyUnassigned: true })
-          .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)))
-          || pickBest(getPool({ gender: genderFilter, minGrade })
-            .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+          .filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
         if (best) {
           const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
           if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
@@ -565,10 +562,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       }
     }
 
-    // ===== PHASE 4: Classroom duties (Grade 11 down to 4) =====
-    // First pass: prefer unassigned prefects
-    // Second pass: allow already-assigned prefects (round-robin)
-    for (const pass of [true, false]) {
+    // ===== PHASE 4: Classroom duties — round-robin distribution =====
+    // Single-duty rule: only assign prefects with zero duties
+    {
       const classPlaces = get().dutyPlaces
         .filter((dp) => !dp.isSpecial)
         .sort((a, b) => {
@@ -577,32 +573,41 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           return gB - gA; // Grade 11 first
         });
 
-      for (const dp of classPlaces) {
-        const currentAssignments = get().assignments.filter((a) => a.dutyPlaceId === dp.id);
-        const maxSlots = dp.maxPrefects || 1;
-        if (currentAssignments.length >= maxSlots) continue;
+      // Collect all unassigned prefects (excluding Head Prefects)
+      let unassignedPool = getPool({ excludeHP: true, onlyUnassigned: true });
 
-        // On second pass, only fill mandatory slots that are still empty
-        if (!pass && !dp.isMandatory && currentAssignments.length > 0) continue;
+      // Round-robin: cycle through classrooms, assign one per classroom per round
+      let assignedThisRound = true;
+      while (assignedThisRound && unassignedPool.length > 0) {
+        assignedThisRound = false;
+        for (const dp of classPlaces) {
+          if (unassignedPool.length === 0) break;
 
-        const classGrade = getClassGrade(dp.name);
-        if (!classGrade) continue;
+          const classGrade = getClassGrade(dp.name);
+          if (!classGrade) continue;
 
-        const eligible = getPool({ excludeHP: true, onlyUnassigned: pass }).filter((p) => {
-          // Prevent duplicate assignment to same place
-          if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
-          // Same-age exclusion (except Grade 11)
-          if (classGrade >= 11) return p.grade === 11;
-          if (p.grade <= classGrade) return false; // Must be senior
-          return true;
-        });
+          // Find eligible candidates for this classroom
+          const eligible = unassignedPool.filter((p) => {
+            if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
+            if (classGrade >= 11) return p.grade === 11;
+            if (p.grade <= classGrade) return false;
+            return true;
+          });
 
-        const slotsToFill = maxSlots - get().assignments.filter((a) => a.dutyPlaceId === dp.id).length;
-        for (let i = 0; i < slotsToFill; i++) {
-          const best = pickBest(eligible.filter((p) => !get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)));
+          const best = pickBest(eligible);
           if (best) {
-            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
-            if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
+            // Bypass maxPrefects for round-robin — directly create assignment
+            const newAssignment: Assignment = {
+              id: generateId(),
+              prefectId: best.id,
+              dutyPlaceId: dp.id,
+              sectionId: dp.sectionId,
+            };
+            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
+            report.assigned++;
+            assignedThisRound = true;
+            // Refresh unassigned pool after each assignment
+            unassignedPool = getPool({ excludeHP: true, onlyUnassigned: true });
           } else if (dp.isMandatory && get().assignments.filter((a) => a.dutyPlaceId === dp.id).length === 0) {
             report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
           }
@@ -610,63 +615,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       }
     }
 
-    // ===== PHASE 5: No Prefect Left Without a Duty =====
-    // Round-robin distribute any remaining unassigned prefects across classrooms
-    {
-      const unassigned = get().prefects.filter((p) => {
-        if (p.isHeadPrefect) return false; // Head Prefects are excluded
-        const dutyCount = get().assignments.filter((a) => a.prefectId === p.id).length;
-        const isHead = get().sections.some((s) => s.headId === p.id || s.coHeadId === p.id);
-        return dutyCount === 0 && !isHead;
-      });
-
-      if (unassigned.length > 0) {
-        const classPlaces = get().dutyPlaces
-          .filter((dp) => !dp.isSpecial)
-          .sort((a, b) => {
-            const gA = getClassGrade(a.name) || 0;
-            const gB = getClassGrade(b.name) || 0;
-            return gB - gA;
-          });
-
-        if (classPlaces.length > 0) {
-          let classIndex = 0;
-          const remaining = [...unassigned];
-
-          while (remaining.length > 0) {
-            const dp = classPlaces[classIndex % classPlaces.length];
-            const classGrade = getClassGrade(dp.name);
-
-            // Find a suitable prefect for this classroom
-            const candidateIdx = remaining.findIndex((p) => {
-              if (get().assignments.some((a) => a.prefectId === p.id && a.dutyPlaceId === dp.id)) return false;
-              if (!classGrade) return true;
-              if (classGrade >= 11) return p.grade === 11;
-              if (p.grade <= classGrade) return false;
-              return true;
-            });
-
-            if (candidateIdx !== -1) {
-              const candidate = remaining[candidateIdx];
-              // Bypass maxPrefects cap — directly create the assignment
-              const newAssignment: Assignment = {
-                id: generateId(),
-                prefectId: candidate.id,
-                dutyPlaceId: dp.id,
-                sectionId: dp.sectionId,
-              };
-              set((s) => ({ assignments: [...s.assignments, newAssignment] }));
-              report.assigned++;
-              remaining.splice(candidateIdx, 1);
-            }
-
-            classIndex++;
-            // Safety: if we've looped through all classes without assigning anyone, break
-            if (classIndex > remaining.length * classPlaces.length + classPlaces.length) break;
-          }
-        }
-      }
-    }
+    // Phase 4 round-robin already ensures no prefect is left without a duty.
+    // Any remaining unassigned prefects couldn't fit due to grade restrictions.
 
     return report;
   },

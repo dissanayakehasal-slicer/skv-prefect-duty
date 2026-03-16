@@ -24,18 +24,18 @@ export function SectionsTab() {
 
     return prefects.filter((p) => {
       if (p.isHeadPrefect || p.isDeputyHeadPrefect) return false;
-      // Already has duty (not as head/co-head of THIS section)
+      // Always include current head/co-head of THIS section (so they appear in dropdown)
+      if (section.headId === p.id || section.coHeadId === p.id) return true;
+      // Already has any duty → not eligible
       const hasDuty = getPrefectDuty(p.id);
       const isLeaderElsewhere = sections.some((s) => s.id !== sectionId && (s.headId === p.id || s.coHeadId === p.id));
       if (hasDuty || isLeaderElsewhere) return false;
-      // Already head/co-head of this section is ok (for re-selection)
-      if (section.headId === p.id || section.coHeadId === p.id) return true;
-      // Seniority: 2+ grades senior, or Grade 11 can lead 10/11
+      // Seniority check
       if (sectionGrade > 0) {
         if (p.grade === 11 && (sectionGrade === 10 || sectionGrade === 11)) return true;
         return p.grade >= sectionGrade + 2;
       }
-      return p.grade >= 8; // For non-grade sections, must be senior
+      return p.grade >= 8;
     });
   };
 

@@ -48,8 +48,9 @@ export function exportPDF() {
       const assignedNames = dpAssignments.map((a) => {
         const p = prefects.find((pr) => pr.id === a.prefectId);
         return p ? `${p.name} (G${p.grade}, ${p.gender[0]})` : '—';
-      }).join(', ') || '— Vacant —';
-      return [dp.name, dp.isSpecial ? 'Special' : 'Class', assignedNames];
+      }).join('\n') || '— Vacant —';
+      const count = dpAssignments.length > 1 ? ` [${dpAssignments.length}]` : '';
+      return [dp.name + count, dp.isSpecial ? 'Special' : 'Class', assignedNames];
     });
 
     autoTable(doc, {
