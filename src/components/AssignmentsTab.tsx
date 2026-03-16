@@ -35,6 +35,40 @@ export function AssignmentsTab() {
     toast.success('Assigned');
   };
 
+  const renderDutyRow = (dp: typeof dutyPlaces[0], sectionId: string) => {
+    const dpAssignments = getAssignedPrefect(dp.id);
+    const isEmpty = dpAssignments.length === 0;
+
+    return (
+      <div key={dp.id} className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${isEmpty && dp.isMandatory ? 'border-destructive/50 bg-destructive/5' : 'bg-muted/30'}`}>
+        <div className="flex items-center gap-2 min-w-[180px]">
+          <span className="font-medium">{dp.name}</span>
+          {dp.isSpecial && <Badge variant="outline" className="text-xs">Special</Badge>}
+          {dp.isMandatory && isEmpty && <AlertCircle className="h-3 w-3 text-destructive" />}
+        </div>
+
+        <div className="flex items-center gap-2 flex-1 justify-center flex-wrap">
+          {dpAssignments.map((a) => {
+            const p = prefects.find((pr) => pr.id === a.prefectId);
+            return p ? (
+              <span key={a.id} className="inline-flex items-center gap-1 bg-primary/10 text-primary rounded-full px-2.5 py-0.5 text-xs font-medium">
+                {p.name} (G{p.grade}, {p.gender[0]})
+                <button onClick={() => { removeAssignment(a.id); toast.success('Removed'); }} className="hover:text-destructive ml-1">×</button>
+              </span>
+            ) : null;
+          })}
+          {isEmpty && <span className="text-muted-foreground italic">Vacant</span>}
+        </div>
+
+        <div className="min-w-[80px] text-right">
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => handleAssign(dp.id, sectionId)} disabled={!selectedPrefect}>
+            <UserPlus className="h-3 w-3 mr-1" /> Assign
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4 animate-fade-in">
       <div className="flex items-center justify-between flex-wrap gap-3">
