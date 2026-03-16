@@ -318,10 +318,41 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const dbUpdates: Record<string, unknown> = {};
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.maxPrefects !== undefined) dbUpdates.max_prefects = updates.maxPrefects;
-    await supabase.from('duty_places').update(dbUpdates).eq('id', id);
-    set((s) => ({
-      dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? { ...dp, ...updates } : dp)),
-    }));
+    if (updates.sectionId !== undefined) dbUpdates.section_id = updates.sectionId || null;
+    if (updates.isSpecial !== undefined) dbUpdates.type = updates.isSpecial ? 'special' : 'classroom';
+    if (updates.isMandatory !== undefined) dbUpdates.mandatory_slots = updates.isMandatory ? 1 : 0;
+    if (updates.requiredGenderBalance !== undefined) dbUpdates.required_gender_balance = updates.requiredGenderBalance;
+    if (updates.genderRequirement !== undefined) dbUpdates.gender_requirement = updates.genderRequirement || null;
+    if (updates.gradeRequirement !== undefined) dbUpdates.grade_requirement = updates.gradeRequirement || null;
+    if (updates.sameGradeIfMultiple !== undefined) dbUpdates.same_grade_if_multiple = updates.sameGradeIfMultiple;
+    
+    if (Object.keys(dbUpdates).length > 0) {
+      await supabase.from('duty_places').update(dbUpdates).eq('id', id);
+    }
+    
+    set((s) => {
+      const oldDp = s.dutyPlaces.find((dp) => dp.id === id);
+      const newDp = { ...oldDp!, ...updates };
+      
+      // Update section dutyPlaceIds if section changed
+      let newSections = s.sections;
+      if (updates.sectionId !== undefined && oldDp && oldDp.sectionId !== updates.sectionId) {
+        newSections = newSections.map((sec) => {
+          if (sec.id === oldDp.sectionId) {
+            return { ...sec, dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id) };
+          }
+          if (sec.id === updates.sectionId) {
+            return { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, id] };
+          }
+          return sec;
+        });
+      }
+      
+      return {
+        dutyPlaces: s.dutyPlaces.map((dp) => (dp.id === id ? newDp : dp)),
+        sections: newSections,
+      };
+    });
   },
 
   getDutyCount: (prefectId: string) => {
