@@ -506,8 +506,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         const femalesNeeded = Math.max(0, 2 - currentFemales);
 
         for (let i = 0; i < malesNeeded; i++) {
-          const best = pickBest(getPool({ gender: 'Male', minGrade: 11, onlyUnassigned: true }))
-            || pickBest(getPool({ gender: 'Male', minGrade: 11 }));
+          const best = pickBest(getPool({ gender: 'Male', minGrade: 11, onlyUnassigned: true }));
           if (best) {
             const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
