@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { usePrefectStore } from '@/store/prefectStore';
-import { Prefect, Gender, GRADE_RANGE, calculateLevel, generateId } from '@/types/prefect';
+import { Prefect, Gender, GRADE_RANGE, calculateLevel } from '@/types/prefect';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Plus, Trash2, Upload, Download, Edit2, Crown, Shield } from 'lucide-react';
 import { toast } from 'sonner';
@@ -16,8 +15,13 @@ export function PrefectsTab() {
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', regNo: '', grade: 5, gender: 'Male' as Gender, isHeadPrefect: false, isDeputyHeadPrefect: false });
 
+  const headPrefectCount = prefects.filter((p) => p.isHeadPrefect).length;
+  const deputyHeadPrefectCount = prefects.filter((p) => p.isDeputyHeadPrefect).length;
+
   const handleAdd = () => {
     if (!form.name || !form.regNo) { toast.error('Name and Reg No required'); return; }
+    if (form.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
+    if (form.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
     addPrefect(form);
     setForm({ name: '', regNo: '', grade: 5, gender: 'Male', isHeadPrefect: false, isDeputyHeadPrefect: false });
     setShowAdd(false);
@@ -26,6 +30,9 @@ export function PrefectsTab() {
 
   const handleUpdate = () => {
     if (!editId) return;
+    const current = prefects.find((p) => p.id === editId);
+    if (form.isHeadPrefect && !current?.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
+    if (form.isDeputyHeadPrefect && !current?.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
     updatePrefect(editId, form);
     setEditId(null);
     toast.success('Prefect updated');
@@ -89,6 +96,13 @@ export function PrefectsTab() {
         </div>
       </div>
 
+      {/* HP/DHP counts */}
+      <div className="flex gap-4 text-sm text-muted-foreground">
+        <span>👑 Head Prefects: <strong className="text-foreground">{headPrefectCount}/2</strong></span>
+        <span>🛡️ Deputy Head Prefects: <strong className="text-foreground">{deputyHeadPrefectCount}/4</strong></span>
+        <span>Level: Grade ≤5 = Junior, Grade 6+ = Senior</span>
+      </div>
+
       {/* Add/Edit Form */}
       {(showAdd || editId) && (
         <div className="duty-card space-y-3">
@@ -110,12 +124,14 @@ export function PrefectsTab() {
           </div>
           <div className="flex gap-3 items-center">
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={form.isHeadPrefect} onChange={(e) => setForm({ ...form, isHeadPrefect: e.target.checked, isDeputyHeadPrefect: false })} />
-              Head Prefect
+              <input type="checkbox" checked={form.isHeadPrefect} onChange={(e) => setForm({ ...form, isHeadPrefect: e.target.checked, isDeputyHeadPrefect: false })} 
+                disabled={!form.isHeadPrefect && headPrefectCount >= 2 && !editId} />
+              Head Prefect {headPrefectCount >= 2 && !form.isHeadPrefect && <span className="text-xs text-muted-foreground">(max reached)</span>}
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={form.isDeputyHeadPrefect} onChange={(e) => setForm({ ...form, isDeputyHeadPrefect: e.target.checked, isHeadPrefect: false })} />
-              Deputy Head Prefect
+              <input type="checkbox" checked={form.isDeputyHeadPrefect} onChange={(e) => setForm({ ...form, isDeputyHeadPrefect: e.target.checked, isHeadPrefect: false })}
+                disabled={!form.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4 && !editId} />
+              Deputy Head Prefect {deputyHeadPrefectCount >= 4 && !form.isDeputyHeadPrefect && <span className="text-xs text-muted-foreground">(max reached)</span>}
             </label>
           </div>
           <div className="flex gap-2">

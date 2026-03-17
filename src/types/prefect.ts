@@ -52,7 +52,7 @@ export interface ValidationIssue {
 export const GRADE_RANGE = [4, 5, 6, 7, 8, 9, 10, 11] as const;
 
 export function calculateLevel(grade: number): Level {
-  return grade <= 7 ? 'Junior' : 'Senior';
+  return grade <= 5 ? 'Junior' : 'Senior';
 }
 
 export function generateId(): string {
