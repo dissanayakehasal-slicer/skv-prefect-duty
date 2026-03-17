@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, MapPin, Pencil, Check, X, Upload } from 'lucide-react';
+import { Plus, Trash2, MapPin, Pencil, Check, X, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
 
@@ -194,6 +194,16 @@ export function SectionsTab() {
       {/* Add Section + Import */}
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold text-foreground flex-1">Sections & Duty Places</h2>
+        <Button variant="outline" size="sm" onClick={() => {
+          const csv = ['Name,SectionId,Special,Mandatory,MaxPrefects,GenderBalance', 'Main Gate,,true,true,4,true', '4A,<section-id-here>,false,true,1,false'];
+          const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'duty_places_template.csv'; a.click();
+          URL.revokeObjectURL(url);
+        }}>
+          <Download className="h-4 w-4 mr-1" /> Template CSV
+        </Button>
         <label className="cursor-pointer">
           <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleImportDutyPlaces} />
           <Button variant="outline" size="sm" asChild><span><Upload className="h-4 w-4 mr-1" /> Import Duty Places (CSV)</span></Button>
