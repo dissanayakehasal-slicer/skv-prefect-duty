@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, MapPin, Pencil, Check, X } from 'lucide-react';
+import { Plus, Trash2, MapPin, Pencil, Check, X, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
 
@@ -14,19 +14,19 @@ export function SectionsTab() {
     sections, dutyPlaces, prefects, assignments,
     addSection, removeSection, renameSection,
     setSectionHead, setSectionCoHead,
-    addDutyPlace, removeDutyPlace, updateDutyPlace,
+    addDutyPlace, removeDutyPlace, updateDutyPlace, importDutyPlaces,
     isSectionHeadOrCoHead, getPrefectDuty, getAssignedPrefect,
   } = usePrefectStore();
 
   const [newSectionName, setNewSectionName] = useState('');
   const [newDpForm, setNewDpForm] = useState({ name: '', sectionId: '', isSpecial: false, isMandatory: false, requiredGenderBalance: false, maxPrefects: 1 });
-  const [showAddDp, setShowAddDp] = useState<string | null>(null); // sectionId or '__general__'
+  const [showAddDp, setShowAddDp] = useState<string | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
   const [editingSectionName, setEditingSectionName] = useState('');
   const [editingDpId, setEditingDpId] = useState<string | null>(null);
   const [editingDpForm, setEditingDpForm] = useState<Record<string, any>>({});
 
-  const getEligibleHeads = (sectionId: string) => {
+  const getEligibleHeads = (sectionId: string, gender?: 'Male' | 'Female') => {
     const section = sections.find((s) => s.id === sectionId);
     if (!section) return [];
     const sectionGradeMatch = section.name.match(/GRADE (\d+)/);
@@ -34,7 +34,10 @@ export function SectionsTab() {
 
     return prefects.filter((p) => {
       if (p.isHeadPrefect || p.isDeputyHeadPrefect) return false;
+      if (gender && p.gender !== gender) return false;
+      // Allow current head/co-head to appear in their own dropdown
       if (section.headId === p.id || section.coHeadId === p.id) return true;
+      // Check not already assigned elsewhere
       const hasDuty = getPrefectDuty(p.id);
       const isLeaderElsewhere = sections.some((s) => s.id !== sectionId && (s.headId === p.id || s.coHeadId === p.id));
       if (hasDuty || isLeaderElsewhere) return false;
@@ -65,7 +68,36 @@ export function SectionsTab() {
     toast.success('Duty place updated');
   };
 
-  // General duty places (no section)
+  const handleImportDutyPlaces = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split('\n').slice(1).filter(Boolean);
+      const parsed = lines.map((line) => {
+        const cols = line.split(',').map((s) => s.trim());
+        // Expected: Name, SectionId (or empty), Special (true/false), Mandatory (true/false), MaxPrefects, GenderBalance (true/false)
+        const name = cols[0] || '';
+        const sectionId = cols[1] || '';
+        const isSpecial = cols[2]?.toLowerCase() === 'true';
+        const isMandatory = cols[3]?.toLowerCase() === 'true';
+        const maxPrefects = parseInt(cols[4]) || 1;
+        const requiredGenderBalance = cols[5]?.toLowerCase() === 'true';
+        return { name, sectionId, isSpecial, isMandatory, maxPrefects, requiredGenderBalance };
+      }).filter((dp) => dp.name);
+
+      if (parsed.length === 0) {
+        toast.error('No valid duty places found in file');
+        return;
+      }
+      importDutyPlaces(parsed);
+      toast.success(`Imported ${parsed.length} duty places`);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   const generalDps = dutyPlaces.filter((dp) => !dp.sectionId);
 
   const renderDpTable = (dps: typeof dutyPlaces, groupId: string) => (
@@ -116,7 +148,7 @@ export function SectionsTab() {
                     <TableCell>{dp.isMandatory ? <span className="badge-warning">Required</span> : 'Optional'}</TableCell>
                     <TableCell>{dp.requiredGenderBalance ? '✓' : '—'}</TableCell>
                     <TableCell>{dp.maxPrefects || 1}</TableCell>
-                    <TableCell>{dp.sectionId ? sections.find((s) => s.id === dp.sectionId)?.name || '—' : '—'}</TableCell>
+                    <TableCell>{dp.sectionId ? sections.find((s) => s.id === dp.sectionId)?.name || '—' : '— General —'}</TableCell>
                     <TableCell>
                       <div className="flex gap-1">
                         <Button variant="ghost" size="sm" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
@@ -159,9 +191,13 @@ export function SectionsTab() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Add Section */}
-      <div className="flex items-center gap-3">
+      {/* Add Section + Import */}
+      <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold text-foreground flex-1">Sections & Duty Places</h2>
+        <label className="cursor-pointer">
+          <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleImportDutyPlaces} />
+          <Button variant="outline" size="sm" asChild><span><Upload className="h-4 w-4 mr-1" /> Import Duty Places (CSV)</span></Button>
+        </label>
         <Input placeholder="New section name" value={newSectionName} onChange={(e) => setNewSectionName(e.target.value)} className="w-48" />
         <Button
           size="sm"
@@ -182,8 +218,8 @@ export function SectionsTab() {
       {/* Sections Grid */}
       {sections.map((section) => {
         const sectionDps = dutyPlaces.filter((dp) => dp.sectionId === section.id);
-        const eligibleMaleHeads = getEligibleHeads(section.id).filter((p) => p.gender === 'Male');
-        const eligibleFemaleCoHeads = getEligibleHeads(section.id).filter((p) => p.gender === 'Female');
+        const eligibleMaleHeads = getEligibleHeads(section.id, 'Male');
+        const eligibleFemaleCoHeads = getEligibleHeads(section.id, 'Female');
 
         return (
           <div key={section.id} className="duty-card space-y-3">
