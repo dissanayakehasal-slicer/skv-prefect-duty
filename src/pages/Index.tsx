@@ -110,7 +110,7 @@ const Index = () => {
                 <Shield className="h-5 w-5 text-primary" />
               </div>
               <div>
-                <h1 className="text-lg font-bold tracking-tight text-foreground">Prefect Duty System</h1>
+                <h1 className="text-lg font-bold tracking-tight text-foreground">SKV PREFECT DUTY</h1>
                 <p className="text-xs text-muted-foreground">
                   {prefects.length} prefects · {assignments.length} assignments
                 </p>
