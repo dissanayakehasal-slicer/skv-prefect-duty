@@ -1,6 +1,7 @@
 import { usePrefectStore } from '@/store/prefectStore';
-import { AlertCircle, AlertTriangle, CheckCircle } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle, ShieldCheck } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export function ValidationPanel() {
   const { validate } = usePrefectStore();
@@ -10,49 +11,95 @@ export function ValidationPanel() {
   const warnings = issues.filter((i) => i.type === 'warning');
 
   return (
-    <div className="space-y-4 animate-fade-in">
-      <h2 className="text-xl font-bold text-foreground">Validation</h2>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-bold text-foreground">Validation</h2>
+        <p className="text-sm text-muted-foreground mt-0.5">Check for assignment conflicts and issues</p>
+      </div>
 
       {issues.length === 0 ? (
-        <div className="duty-card flex items-center gap-3 text-green-700">
-          <CheckCircle className="h-5 w-5" />
-          <span className="font-medium">All assignments valid — no conflicts detected.</span>
-        </div>
+        <motion.div
+          className="duty-card flex items-center gap-4"
+          style={{ borderColor: 'hsl(var(--success) / 0.3)', boxShadow: 'var(--glow-success)' }}
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+        >
+          <div className="h-12 w-12 rounded-xl flex items-center justify-center" style={{ background: 'hsl(var(--success) / 0.1)' }}>
+            <ShieldCheck className="h-6 w-6 text-success" />
+          </div>
+          <div>
+            <p className="font-semibold text-foreground">All Clear</p>
+            <p className="text-sm text-muted-foreground">No conflicts detected — assignments are valid.</p>
+          </div>
+        </motion.div>
       ) : (
         <>
-          <p className="text-sm text-muted-foreground">
-            <span className="text-destructive font-medium">{errors.length} errors</span> · <span className="text-amber-600 font-medium">{warnings.length} warnings</span>
-          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <motion.div className="duty-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <div className="flex items-center gap-2 mb-1">
+                <AlertCircle className="h-4 w-4 text-destructive" />
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Errors</span>
+              </div>
+              <p className="text-2xl font-bold text-destructive">{errors.length}</p>
+            </motion.div>
+            <motion.div className="duty-card" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
+              <div className="flex items-center gap-2 mb-1">
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Warnings</span>
+              </div>
+              <p className="text-2xl font-bold text-warning">{warnings.length}</p>
+            </motion.div>
+          </div>
 
-          {errors.length > 0 && (
-            <div className="space-y-1.5">
-              <h3 className="text-sm font-semibold text-destructive flex items-center gap-1"><AlertCircle className="h-4 w-4" /> Errors</h3>
-              {errors.map((issue, i) => (
-                <div key={i} className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
-                  <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-                  <div>
-                    <Badge variant="outline" className="text-xs mr-2">{issue.category.replace('_', ' ')}</Badge>
-                    {issue.message}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <AnimatePresence>
+            {errors.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="h-4 w-4" /> Errors
+                </h3>
+                {errors.map((issue, i) => (
+                  <motion.div
+                    key={i}
+                    className="flex items-start gap-3 rounded-lg border p-3 text-sm"
+                    style={{ borderColor: 'hsl(var(--destructive) / 0.2)', background: 'hsl(var(--destructive) / 0.05)' }}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                  >
+                    <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                    <div>
+                      <Badge variant="outline" className="text-xs mr-2 border-destructive/20">{issue.category.replace(/_/g, ' ')}</Badge>
+                      <span className="text-foreground">{issue.message}</span>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
 
-          {warnings.length > 0 && (
-            <div className="space-y-1.5">
-              <h3 className="text-sm font-semibold text-amber-600 flex items-center gap-1"><AlertTriangle className="h-4 w-4" /> Warnings</h3>
-              {warnings.map((issue, i) => (
-                <div key={i} className="flex items-start gap-2 rounded-md border border-amber-300/50 bg-amber-50 px-3 py-2 text-sm">
-                  <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
-                  <div>
-                    <Badge variant="outline" className="text-xs mr-2">{issue.category.replace('_', ' ')}</Badge>
-                    {issue.message}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+            {warnings.length > 0 && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-warning flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4" /> Warnings
+                </h3>
+                {warnings.map((issue, i) => (
+                  <motion.div
+                    key={i}
+                    className="flex items-start gap-3 rounded-lg border p-3 text-sm"
+                    style={{ borderColor: 'hsl(var(--warning) / 0.2)', background: 'hsl(var(--warning) / 0.05)' }}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                  >
+                    <AlertTriangle className="h-4 w-4 text-warning mt-0.5 shrink-0" />
+                    <div>
+                      <Badge variant="outline" className="text-xs mr-2 border-warning/20">{issue.category.replace(/_/g, ' ')}</Badge>
+                      <span className="text-foreground">{issue.message}</span>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </AnimatePresence>
         </>
       )}
     </div>
