@@ -1,20 +1,22 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { PrefectsTab } from '@/components/PrefectsTab';
 import { SectionsTab } from '@/components/SectionsTab';
 import { AssignmentsTab } from '@/components/AssignmentsTab';
+import { StandingsTab } from '@/components/StandingsTab';
 import { ValidationPanel } from '@/components/ValidationPanel';
 import { AdminLogin } from '@/components/AdminLogin';
 import { ScreenSaver } from '@/components/ScreenSaver';
 import { exportPDF } from '@/utils/exportPdf';
 import { Button } from '@/components/ui/button';
 import { usePrefectStore } from '@/store/prefectStore';
-import { FileDown, Users, MapPin, ClipboardList, ShieldCheck, Shield, LogOut } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { FileDown, Users, MapPin, ClipboardList, ShieldCheck, Shield, LogOut, Trophy } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 
 const TABS = [
   { id: 'prefects', label: 'Prefects', icon: Users },
   { id: 'sections', label: 'Sections', icon: MapPin },
   { id: 'assignments', label: 'Assignments', icon: ClipboardList },
+  { id: 'standings', label: 'Standings', icon: Trophy },
   { id: 'validation', label: 'Validation', icon: ShieldCheck },
 ] as const;
 
@@ -26,8 +28,16 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<TabId>('prefects');
   const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('admin_authenticated') === 'true');
   const [screenSaverActive, setScreenSaverActive] = useState(false);
-  const { prefects, assignments, validate, loadFromDB, loading, initialized } = usePrefectStore();
-  const issues = validate();
+  const { prefects, sections, dutyPlaces, assignments, loadFromDB, loading, initialized } = usePrefectStore(useShallow((state) => ({
+    prefects: state.prefects,
+    sections: state.sections,
+    dutyPlaces: state.dutyPlaces,
+    assignments: state.assignments,
+    loadFromDB: state.loadFromDB,
+    loading: state.loading,
+    initialized: state.initialized,
+  })));
+  const issues = useMemo(() => usePrefectStore.getState().validate(), [prefects, sections, dutyPlaces, assignments]);
   const errorCount = issues.filter((i) => i.type === 'error').length;
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -59,21 +69,15 @@ const Index = () => {
   if (loading && !initialized) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <motion.div
-          className="flex flex-col items-center gap-4"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          <motion.div
+        <div className="flex flex-col items-center gap-4">
+          <div
             className="h-12 w-12 rounded-xl flex items-center justify-center"
             style={{ background: 'hsl(38 100% 56% / 0.1)' }}
-            animate={{ rotate: 360 }}
-            transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
           >
             <Shield className="h-6 w-6 text-primary" />
-          </motion.div>
+          </div>
           <p className="text-muted-foreground text-sm">Loading system data...</p>
-        </motion.div>
+        </div>
       </div>
     );
   }
@@ -86,14 +90,19 @@ const Index = () => {
   return (
     <>
       <ScreenSaver active={screenSaverActive} onDismiss={() => setScreenSaverActive(false)} />
-      <div className="min-h-screen bg-background">
-        {/* Header */}
-        <motion.header
+      <div className="min-h-screen bg-background relative overflow-hidden">
+        <div
+          className="pointer-events-none absolute -top-40 -left-40 h-[520px] w-[520px] rounded-full"
+          style={{ background: 'radial-gradient(circle at 30% 30%, hsl(38 92% 58% / 0.18), transparent 60%)', filter: 'blur(8px)' }}
+        />
+        <div
+          className="pointer-events-none absolute -bottom-56 -right-56 h-[620px] w-[620px] rounded-full"
+          style={{ background: 'radial-gradient(circle at 40% 40%, hsl(210 80% 55% / 0.14), transparent 62%)', filter: 'blur(10px)' }}
+        />
+
+        <header
           className="border-b border-border/50 sticky top-0 z-40"
-          style={{ background: 'hsl(225 25% 7% / 0.8)', backdropFilter: 'blur(16px)' }}
-          initial={{ y: -60, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ duration: 0.4 }}
+          style={{ background: 'hsl(var(--background) / 0.7)', backdropFilter: 'blur(18px)' }}
         >
           <div className="container mx-auto px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -116,15 +125,11 @@ const Index = () => {
               </Button>
             </div>
           </div>
-        </motion.header>
+        </header>
 
-        {/* Tabs */}
-        <motion.div
+        <div
           className="border-b border-border/30"
-          style={{ background: 'hsl(225 25% 7% / 0.5)' }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
+          style={{ background: 'hsl(var(--background) / 0.45)' }}
         >
           <div className="container mx-auto px-6">
             <nav className="flex gap-1">
@@ -132,58 +137,39 @@ const Index = () => {
                 const Icon = tab.icon;
                 const isActive = activeTab === tab.id;
                 return (
-                  <motion.button
+                  <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
                     className={`relative flex items-center gap-2 px-5 py-3.5 text-sm font-medium transition-colors ${
                       isActive ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
                     }`}
-                    whileHover={{ y: -1 }}
-                    whileTap={{ y: 0 }}
                   >
                     <Icon className="h-4 w-4" />
                     {tab.label}
                     {tab.id === 'validation' && errorCount > 0 && (
-                      <motion.span
-                        className="ml-1 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs px-1"
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ type: 'spring' }}
-                      >
+                      <span className="ml-1 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs px-1">
                         {errorCount}
-                      </motion.span>
+                      </span>
                     )}
                     {isActive && (
-                      <motion.div
+                      <div
                         className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full"
                         style={{ background: 'hsl(38 100% 56%)' }}
-                        layoutId="activeTab"
-                        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                       />
                     )}
-                  </motion.button>
+                  </button>
                 );
               })}
             </nav>
           </div>
-        </motion.div>
+        </div>
 
-        {/* Content */}
         <main className="container mx-auto px-6 py-8">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -12 }}
-              transition={{ duration: 0.25 }}
-            >
-              {activeTab === 'prefects' && <PrefectsTab />}
-              {activeTab === 'sections' && <SectionsTab />}
-              {activeTab === 'assignments' && <AssignmentsTab />}
-              {activeTab === 'validation' && <ValidationPanel />}
-            </motion.div>
-          </AnimatePresence>
+          {activeTab === 'prefects' && <PrefectsTab />}
+          {activeTab === 'sections' && <SectionsTab />}
+          {activeTab === 'assignments' && <AssignmentsTab />}
+          {activeTab === 'standings' && <StandingsTab />}
+          {activeTab === 'validation' && <ValidationPanel />}
         </main>
       </div>
     </>

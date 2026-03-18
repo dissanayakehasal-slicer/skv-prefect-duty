@@ -1,27 +1,68 @@
-import { useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { usePrefectStore } from '@/store/prefectStore';
 import { Prefect, Gender, GRADE_RANGE, calculateLevel } from '@/types/prefect';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Plus, Trash2, Upload, Download, Edit2, Crown, Shield, User, Search } from 'lucide-react';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 
 export function PrefectsTab() {
-  const { prefects, addPrefect, updatePrefect, removePrefect, importPrefects, getPrefectDuty, isSectionHeadOrCoHead } = usePrefectStore();
+  const { prefects, assignments, sections, addPrefect, updatePrefect, removePrefect, importPrefects } = usePrefectStore(useShallow((state) => ({
+    prefects: state.prefects,
+    assignments: state.assignments,
+    sections: state.sections,
+    addPrefect: state.addPrefect,
+    updatePrefect: state.updatePrefect,
+    removePrefect: state.removePrefect,
+    importPrefects: state.importPrefects,
+  })));
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Prefect | null>(null);
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'on_duty' | 'not_on_duty' | 'leaders'>('all');
   const [form, setForm] = useState({ name: '', regNo: '', grade: 5, gender: 'Male' as Gender, isHeadPrefect: false, isDeputyHeadPrefect: false });
+  const deferredSearch = useDeferredValue(search);
 
-  const headPrefectCount = prefects.filter((p) => p.isHeadPrefect).length;
-  const deputyHeadPrefectCount = prefects.filter((p) => p.isDeputyHeadPrefect).length;
+  const headPrefectCount = useMemo(() => prefects.filter((p) => p.isHeadPrefect).length, [prefects]);
+  const deputyHeadPrefectCount = useMemo(() => prefects.filter((p) => p.isDeputyHeadPrefect).length, [prefects]);
+  const dutyPrefectIds = useMemo(() => new Set(assignments.map((assignment) => assignment.prefectId)), [assignments]);
+  const leaderPrefectIds = useMemo(() => {
+    const ids = new Set<string>();
+    sections.forEach((section) => {
+      if (section.headId) ids.add(section.headId);
+      if (section.coHeadId) ids.add(section.coHeadId);
+    });
+    return ids;
+  }, [sections]);
 
-  const filtered = prefects.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase()) || p.regNo.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    const query = deferredSearch.toLowerCase();
+    return prefects
+      .filter((p) => p.name.toLowerCase().includes(query) || p.regNo.toLowerCase().includes(query))
+      .filter((p) => {
+        const onDuty = dutyPrefectIds.has(p.id);
+        const isLeader = leaderPrefectIds.has(p.id);
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'leaders') return isLeader;
+        if (statusFilter === 'on_duty') return onDuty;
+        if (statusFilter === 'not_on_duty') return !onDuty && !isLeader && !p.isHeadPrefect && !p.isDeputyHeadPrefect;
+        return true;
+      });
+  }, [deferredSearch, dutyPrefectIds, leaderPrefectIds, prefects, statusFilter]);
 
   const handleAdd = () => {
     if (!form.name || !form.regNo) { toast.error('Name and Reg No required'); return; }
@@ -75,8 +116,35 @@ export function PrefectsTab() {
     setForm({ name: p.name, regNo: p.regNo, grade: p.grade, gender: p.gender, isHeadPrefect: p.isHeadPrefect || false, isDeputyHeadPrefect: p.isDeputyHeadPrefect || false });
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const err = await removePrefect(deleteTarget.id);
+    if (err) toast.error(err);
+    else toast.success('Removed');
+    setDeleteTarget(null);
+  };
+
   return (
     <div className="space-y-6">
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete prefect?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget
+                ? `This will remove ${deleteTarget.name} from the prefect list. This action cannot be undone.`
+                : 'This action cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -97,7 +165,7 @@ export function PrefectsTab() {
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <motion.div className="duty-card flex items-center gap-3" whileHover={{ scale: 1.02 }}>
+        <div className="duty-card flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg flex items-center justify-center" style={{ background: 'hsl(38 100% 56% / 0.1)' }}>
             <Crown className="h-4 w-4 text-primary" />
           </div>
@@ -105,8 +173,8 @@ export function PrefectsTab() {
             <p className="text-xs text-muted-foreground">Head Prefects</p>
             <p className="text-lg font-bold text-foreground">{headPrefectCount}<span className="text-xs text-muted-foreground font-normal">/2</span></p>
           </div>
-        </motion.div>
-        <motion.div className="duty-card flex items-center gap-3" whileHover={{ scale: 1.02 }}>
+        </div>
+        <div className="duty-card flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg flex items-center justify-center" style={{ background: 'hsl(210 80% 55% / 0.1)' }}>
             <Shield className="h-4 w-4" style={{ color: 'hsl(210 80% 55%)' }} />
           </div>
@@ -114,8 +182,8 @@ export function PrefectsTab() {
             <p className="text-xs text-muted-foreground">Deputy Heads</p>
             <p className="text-lg font-bold text-foreground">{deputyHeadPrefectCount}<span className="text-xs text-muted-foreground font-normal">/4</span></p>
           </div>
-        </motion.div>
-        <motion.div className="duty-card flex items-center gap-3" whileHover={{ scale: 1.02 }}>
+        </div>
+        <div className="duty-card flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg flex items-center justify-center" style={{ background: 'hsl(var(--success) / 0.1)' }}>
             <User className="h-4 w-4 text-success" />
           </div>
@@ -123,8 +191,8 @@ export function PrefectsTab() {
             <p className="text-xs text-muted-foreground">Junior (≤G5)</p>
             <p className="text-lg font-bold text-foreground">{prefects.filter((p) => p.level === 'Junior').length}</p>
           </div>
-        </motion.div>
-        <motion.div className="duty-card flex items-center gap-3" whileHover={{ scale: 1.02 }}>
+        </div>
+        <div className="duty-card flex items-center gap-3">
           <div className="h-9 w-9 rounded-lg flex items-center justify-center" style={{ background: 'hsl(var(--warning) / 0.1)' }}>
             <User className="h-4 w-4 text-warning" />
           </div>
@@ -132,29 +200,36 @@ export function PrefectsTab() {
             <p className="text-xs text-muted-foreground">Senior (G6+)</p>
             <p className="text-lg font-bold text-foreground">{prefects.filter((p) => p.level === 'Senior').length}</p>
           </div>
-        </motion.div>
+        </div>
       </div>
 
       {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search prefects by name or reg no..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-10 h-11 bg-muted/30 border-border/50"
-        />
+      <div className="flex flex-col md:flex-row gap-2 md:items-center">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search prefects by name or reg no..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-10 h-11 bg-muted/30 border-border/50"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+          <SelectTrigger className="h-11 w-full md:w-56 bg-muted/30 border-border/50">
+            <SelectValue placeholder="Filter..." />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All</SelectItem>
+            <SelectItem value="on_duty">On duty</SelectItem>
+            <SelectItem value="not_on_duty">Not on duty</SelectItem>
+            <SelectItem value="leaders">Section leaders</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Add/Edit Form */}
-      <AnimatePresence>
-        {(showAdd || editId) && (
-          <motion.div
-            className="duty-card space-y-4"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-          >
+      {(showAdd || editId) && (
+          <div className="duty-card space-y-4">
             <h3 className="font-semibold text-foreground text-sm">{editId ? 'Edit Prefect' : 'New Prefect'}</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Input placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="bg-muted/30" />
@@ -185,30 +260,23 @@ export function PrefectsTab() {
               <Button size="sm" onClick={editId ? handleUpdate : handleAdd}>{editId ? 'Save Changes' : 'Add Prefect'}</Button>
               <Button size="sm" variant="ghost" onClick={() => { setShowAdd(false); setEditId(null); }}>Cancel</Button>
             </div>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
 
       {/* Prefect Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <AnimatePresence>
           {filtered.length === 0 && (
-            <motion.div className="col-span-full text-center py-12 text-muted-foreground" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <div className="col-span-full text-center py-12 text-muted-foreground">
               {search ? 'No prefects match your search.' : 'No prefects added yet. Click "Add Prefect" to begin.'}
-            </motion.div>
+            </div>
           )}
           {filtered.map((p, i) => {
-            const duty = getPrefectDuty(p.id);
-            const isLeader = isSectionHeadOrCoHead(p.id);
+            const duty = dutyPrefectIds.has(p.id);
+            const isLeader = leaderPrefectIds.has(p.id);
             return (
-              <motion.div
+              <div
                 key={p.id}
                 className="duty-card group"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                transition={{ delay: i * 0.02 }}
-                layout
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -225,7 +293,7 @@ export function PrefectsTab() {
                   </div>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEdit(p)}><Edit2 className="h-3 w-3" /></Button>
-                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={async () => { const err = await removePrefect(p.id); if (err) toast.error(err); else toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
+                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setDeleteTarget(p)}><Trash2 className="h-3 w-3 text-destructive" /></Button>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center gap-2 flex-wrap">
@@ -238,10 +306,9 @@ export function PrefectsTab() {
                   {duty && <span className="badge-warning text-xs">On Duty</span>}
                   {!p.isHeadPrefect && !p.isDeputyHeadPrefect && !isLeader && !duty && <span className="text-xs text-muted-foreground">Available</span>}
                 </div>
-              </motion.div>
+              </div>
             );
           })}
-        </AnimatePresence>
       </div>
     </div>
   );

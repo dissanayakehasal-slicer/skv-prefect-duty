@@ -72,6 +72,42 @@ export function exportPDF() {
     }
   }
 
+  // General duties (no section)
+  {
+    const generalDps = dutyPlaces.filter((dp) => !dp.sectionId);
+    if (generalDps.length > 0) {
+      if (y > 260) { doc.addPage(); y = 15; }
+
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.text('GENERAL DUTIES', 14, y);
+      y += 1;
+
+      const rows = generalDps.map((dp) => {
+        const dpAssignments = assignments.filter((a) => a.dutyPlaceId === dp.id);
+        const assignedNames = dpAssignments.map((a) => {
+          const p = prefects.find((pr) => pr.id === a.prefectId);
+          return p ? `${p.name} (G${p.grade}, ${p.gender[0]})` : '—';
+        }).join('\n') || '— Vacant —';
+        const count = dpAssignments.length > 1 ? ` [${dpAssignments.length}]` : '';
+        return [dp.name + count, dp.isSpecial ? 'Special' : 'Class', assignedNames];
+      });
+
+      autoTable(doc, {
+        startY: y + 2,
+        head: [['Duty Place', 'Type', 'Assigned Prefect(s)']],
+        body: rows,
+        theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 1.5 },
+        headStyles: { fillColor: [30, 41, 69], textColor: 255, fontStyle: 'bold', fontSize: 8 },
+        columnStyles: { 0: { cellWidth: 35 }, 1: { cellWidth: 20 } },
+        margin: { left: 14, right: 14 },
+      });
+
+      y = (doc as any).lastAutoTable.finalY + 6;
+    }
+  }
+
   // Signature block
   if (y > 240) { doc.addPage(); y = 15; }
   y += 10;

@@ -42,6 +42,14 @@ export interface Assignment {
   sectionId: string;
 }
 
+export interface PointLog {
+  id: string;
+  prefectId: string;
+  amount: number;
+  reason: string;
+  createdAt: string;
+}
+
 export interface ValidationIssue {
   type: 'error' | 'warning';
   category: 'grade_mismatch' | 'single_duty' | 'gender_violation' | 'vacant_mandatory' | 'same_age' | 'below_minimum';

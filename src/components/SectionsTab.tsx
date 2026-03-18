@@ -7,7 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, Trash2, MapPin, Pencil, Check, X, Upload, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
-import { motion, AnimatePresence } from 'framer-motion';
+import { normalizeHeader, parseCsv } from '@/utils/csv';
+import { GRADE_RANGE } from '@/types/prefect';
 
 export function SectionsTab() {
   const {
@@ -19,36 +20,135 @@ export function SectionsTab() {
   } = usePrefectStore();
 
   const [newSectionName, setNewSectionName] = useState('');
-  const [newDpForm, setNewDpForm] = useState({ name: '', sectionId: '', isSpecial: false, isMandatory: false, requiredGenderBalance: false, minPrefects: 1, maxPrefects: 2 });
+  const [newDpForm, setNewDpForm] = useState({
+    name: '',
+    sectionId: '',
+    isSpecial: false,
+    isMandatory: false,
+    requiredGenderBalance: false,
+    minPrefects: 1,
+    maxPrefects: 2,
+    genderRequirement: '',
+    gradeRequirement: '',
+    sameGradeIfMultiple: false,
+  });
   const [showAddDp, setShowAddDp] = useState<string | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
   const [editingSectionName, setEditingSectionName] = useState('');
   const [editingDpId, setEditingDpId] = useState<string | null>(null);
   const [editingDpForm, setEditingDpForm] = useState<Record<string, any>>({});
 
-  const getEligibleHeads = (sectionId: string, gender?: 'Male' | 'Female') => {
+  const getEligibleHeads = (sectionId: string) => {
     const section = sections.find((s) => s.id === sectionId);
     if (!section) return [];
     const sectionGradeMatch = section.name.match(/GRADE (\d+)/);
     const sectionGrade = sectionGradeMatch ? parseInt(sectionGradeMatch[1]) : 0;
     return prefects.filter((p) => {
       if (p.isHeadPrefect || p.isDeputyHeadPrefect) return false;
-      if (gender && p.gender !== gender) return false;
+      // Keep current selections in list even if they'd fail new filters
       if (section.headId === p.id || section.coHeadId === p.id) return true;
       const hasDuty = getPrefectDuty(p.id);
       const isLeaderElsewhere = sections.some((s) => s.id !== sectionId && (s.headId === p.id || s.coHeadId === p.id));
       if (hasDuty || isLeaderElsewhere) return false;
-      if (sectionGrade > 0) {
-        if (p.grade === 11 && (sectionGrade === 10 || sectionGrade === 11)) return true;
-        return p.grade >= sectionGrade + 2;
-      }
+      if (sectionGrade > 0) return p.grade >= sectionGrade + 1;
       return p.grade >= 8;
     });
   };
 
   const startEditDp = (dp: any) => {
     setEditingDpId(dp.id);
-    setEditingDpForm({ name: dp.name, isSpecial: dp.isSpecial || false, isMandatory: dp.isMandatory || false, requiredGenderBalance: dp.requiredGenderBalance || false, minPrefects: dp.minPrefects ?? 1, maxPrefects: dp.maxPrefects || 1, sectionId: dp.sectionId || '' });
+    setEditingDpForm({
+      name: dp.name,
+      isSpecial: dp.isSpecial || false,
+      isMandatory: dp.isMandatory || false,
+      requiredGenderBalance: dp.requiredGenderBalance || false,
+      minPrefects: dp.minPrefects ?? 1,
+      maxPrefects: dp.maxPrefects ?? 1,
+      sectionId: dp.sectionId || '',
+      genderRequirement: dp.genderRequirement || '',
+      gradeRequirement: dp.gradeRequirement || '',
+      sameGradeIfMultiple: dp.sameGradeIfMultiple || false,
+    });
+  };
+
+  const parseGradeList = (raw: string): number[] => {
+    const parts = (raw || '')
+      .split(',')
+      .map((p) => parseInt(p.trim(), 10))
+      .filter((n) => Number.isFinite(n));
+    return Array.from(new Set(parts)).sort((a, b) => a - b);
+  };
+
+  const setGradeToggle = (form: Record<string, any>, setter: (next: any) => void, grade: number, enabled: boolean) => {
+    const current = parseGradeList(form.gradeRequirement || '');
+    const next = enabled ? Array.from(new Set([...current, grade])) : current.filter((g) => g !== grade);
+    setter({ ...form, gradeRequirement: next.join(',') });
+  };
+
+  const renderEligibility = (form: Record<string, any>, setter: (next: any) => void) => {
+    const selectedGrades = new Set(parseGradeList(form.gradeRequirement || ''));
+    const genderValue = form.genderRequirement === 'M' ? 'M' : form.genderRequirement === 'F' ? 'F' : '_any';
+    return (
+      <div className="w-full grid grid-cols-2 md:grid-cols-8 gap-2 rounded-lg bg-muted/10 border border-border/40 p-3">
+        <div className="col-span-2 md:col-span-4">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Allowed grades</label>
+          <div className="flex flex-wrap gap-2">
+            {GRADE_RANGE.map((g) => (
+              <label key={g} className="flex items-center gap-1.5 text-xs">
+                <Checkbox
+                  checked={selectedGrades.has(g)}
+                  onCheckedChange={(c) => setGradeToggle(form, setter, g, !!c)}
+                />
+                G{g}
+              </label>
+            ))}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={() => setter({ ...form, gradeRequirement: '' })}
+              disabled={!form.gradeRequirement}
+            >
+              Clear
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">Leave empty = any grade</p>
+        </div>
+
+        <div className="col-span-2 md:col-span-2">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Gender requirement</label>
+          <Select
+            value={genderValue}
+            onValueChange={(v) => setter({ ...form, genderRequirement: v === '_any' ? '' : v })}
+          >
+            <SelectTrigger className="h-9 bg-muted/20 border-border/40 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_any">Any</SelectItem>
+              <SelectItem value="M">Male only</SelectItem>
+              <SelectItem value="F">Female only</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground mt-1">Used by auto-assign for special duties</p>
+        </div>
+
+        <div className="col-span-2 md:col-span-2 flex flex-col justify-between">
+          <div>
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Multiple-prefect rules</label>
+            <label className="flex items-center gap-2 text-xs">
+              <Checkbox
+                checked={!!form.sameGradeIfMultiple}
+                onCheckedChange={(c) => setter({ ...form, sameGradeIfMultiple: !!c })}
+              />
+              Same grade if multiple assigned
+            </label>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-2">Optional constraint for manual checks</p>
+        </div>
+      </div>
+    );
   };
 
   const saveEditDp = async () => {
@@ -68,31 +168,101 @@ export function SectionsTab() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      const lines = text.split('\n').slice(1).filter(Boolean);
-      const parsed = lines.map((line) => {
-        const cols = line.split(',').map((s) => s.trim());
-        // Expected: Name, SectionId, Special, Mandatory, MinPrefects, MaxPrefects, GenderBalance
-        return {
-          name: cols[0] || '',
-          sectionId: cols[1] || '',
-          isSpecial: cols[2]?.toLowerCase() === 'true',
-          isMandatory: cols[3]?.toLowerCase() === 'true',
-          minPrefects: parseInt(cols[4]) || 0,
-          maxPrefects: parseInt(cols[5]) || 1,
-          requiredGenderBalance: cols[6]?.toLowerCase() === 'true',
-        };
-      }).filter((dp) => dp.name);
+      const { headers, rows } = parseCsv(text);
+
+      const headerIndex: Record<string, number> = {};
+      headers.forEach((h, idx) => {
+        const key = normalizeHeader(h);
+        if (key) headerIndex[key] = idx;
+      });
+
+      const get = (r: string[], key: string, fallbackIdx?: number) => {
+        const idx = headerIndex[key];
+        if (idx !== undefined) return r[idx] ?? '';
+        if (fallbackIdx !== undefined) return r[fallbackIdx] ?? '';
+        return '';
+      };
+
+      const parseBool = (v: string) => {
+        const s = (v || '').trim().toLowerCase();
+        return s === 'true' || s === '1' || s === 'yes' || s === 'y';
+      };
+
+      const resolveSectionId = (raw: string) => {
+        const s = (raw || '').trim();
+        if (!s) return '';
+        const byId = sections.find((sec) => sec.id === s);
+        if (byId) return byId.id;
+        const normalized = s.toLowerCase();
+        const byName = sections.find((sec) => sec.name.trim().toLowerCase() === normalized);
+        return byName?.id || '';
+      };
+
+      const parsed = rows
+        .map((r) => {
+          const name = get(r, 'name', 0).trim();
+          const sectionRaw =
+            get(r, 'sectionid') ||
+            get(r, 'section') ||
+            get(r, 'sectionname') ||
+            (r[1] || '');
+
+          const maxRaw = get(r, 'maxprefects') || get(r, 'max') || (r[5] || '');
+          const maxPrefects =
+            maxRaw.trim().toLowerCase() === 'unlimited'
+              ? 0
+              : Number.isFinite(parseInt(maxRaw, 10))
+                ? parseInt(maxRaw, 10)
+                : 2;
+
+          return {
+            name,
+            sectionId: resolveSectionId(sectionRaw),
+            isSpecial: parseBool(get(r, 'special', 2)),
+            isMandatory: parseBool(get(r, 'mandatory', 3)),
+            minPrefects: parseInt(get(r, 'minprefects', 4), 10) || 0,
+            maxPrefects: Math.max(0, maxPrefects),
+            requiredGenderBalance: parseBool(get(r, 'genderbalance', 6)),
+            genderRequirement: (() => {
+              const v = (get(r, 'genderrequirement') || get(r, 'gender') || '').trim().toLowerCase();
+              if (!v) return '';
+              if (v === 'm' || v === 'male') return 'M';
+              if (v === 'f' || v === 'female') return 'F';
+              return '';
+            })(),
+            gradeRequirement: (get(r, 'graderequirement') || get(r, 'grades') || '').trim(),
+            sameGradeIfMultiple: parseBool(get(r, 'samegradeifmultiple')),
+            __sectionRaw: (sectionRaw || '').trim(),
+          };
+        })
+        .filter((dp) => dp.name);
 
       if (parsed.length === 0) { toast.error('No valid duty places found'); return; }
-      importDutyPlaces(parsed);
-      toast.success(`Imported ${parsed.length} duty places`);
+
+      const unknownSections = parsed
+        .filter((dp) => dp.__sectionRaw && !dp.sectionId)
+        .map((dp) => dp.__sectionRaw);
+
+      const cleaned = parsed.map(({ __sectionRaw, ...dp }) => dp);
+      importDutyPlaces(cleaned);
+
+      if (unknownSections.length > 0) {
+        const unique = Array.from(new Set(unknownSections)).slice(0, 5);
+        toast.warning(`Imported ${cleaned.length}. Unknown sections ignored: ${unique.join(', ')}${unknownSections.length > unique.length ? '…' : ''}`);
+      } else {
+        toast.success(`Imported ${cleaned.length} duty places`);
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
   const downloadTemplate = () => {
-    const csv = ['Name,SectionId,Special,Mandatory,MinPrefects,MaxPrefects,GenderBalance', 'Main Gate,,true,true,2,4,true', '4A,<section-id>,false,true,1,2,false'];
+    const csv = [
+      'Name,SectionId,Special,Mandatory,MinPrefects,MaxPrefects,GenderBalance,GenderRequirement,GradeRequirement,SameGradeIfMultiple',
+      'Main Gate,,true,true,2,4,true,,10, false',
+      '4A,<section-id>,false,true,1,2,false,,,false',
+    ];
     const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'duty_places_template.csv'; a.click();
@@ -104,7 +274,8 @@ export function SectionsTab() {
   const renderDpRow = (dp: typeof dutyPlaces[0]) => {
     if (editingDpId === dp.id) {
       return (
-        <motion.div key={dp.id} className="grid grid-cols-2 md:grid-cols-8 gap-2 items-center p-3 rounded-lg bg-muted/20 border border-primary/20" layout>
+        <div key={dp.id} className="space-y-3 p-3 rounded-lg bg-muted/20 border border-primary/20">
+          <div className="grid grid-cols-2 md:grid-cols-8 gap-2 items-center">
           <Input value={editingDpForm.name} onChange={(e) => setEditingDpForm({ ...editingDpForm, name: e.target.value })} className="h-8 bg-muted/30 text-sm" />
           <label className="flex items-center gap-1.5 text-xs"><Checkbox checked={editingDpForm.isSpecial} onCheckedChange={(c) => setEditingDpForm({ ...editingDpForm, isSpecial: !!c })} /> Special</label>
           <label className="flex items-center gap-1.5 text-xs"><Checkbox checked={editingDpForm.isMandatory} onCheckedChange={(c) => setEditingDpForm({ ...editingDpForm, isMandatory: !!c })} /> Mandatory</label>
@@ -115,7 +286,7 @@ export function SectionsTab() {
           </div>
           <div className="flex items-center gap-1">
             <span className="text-xs text-muted-foreground">Max</span>
-            <Input type="number" min={1} max={10} value={editingDpForm.maxPrefects} onChange={(e) => setEditingDpForm({ ...editingDpForm, maxPrefects: parseInt(e.target.value) || 1 })} className="h-8 w-14 bg-muted/30 text-sm" />
+          <Input type="number" min={0} max={50} value={editingDpForm.maxPrefects} onChange={(e) => setEditingDpForm({ ...editingDpForm, maxPrefects: parseInt(e.target.value) || 0 })} className="h-8 w-14 bg-muted/30 text-sm" />
           </div>
           <Select value={editingDpForm.sectionId || '_none'} onValueChange={(v) => setEditingDpForm({ ...editingDpForm, sectionId: v === '_none' ? '' : v })}>
             <SelectTrigger className="h-8 bg-muted/30 text-xs"><SelectValue /></SelectTrigger>
@@ -128,17 +299,16 @@ export function SectionsTab() {
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={saveEditDp}><Check className="h-3 w-3 text-success" /></Button>
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setEditingDpId(null)}><X className="h-3 w-3" /></Button>
           </div>
-        </motion.div>
+          </div>
+          {renderEligibility(editingDpForm, setEditingDpForm)}
+        </div>
       );
     }
 
     return (
-      <motion.div
+      <div
         key={dp.id}
         className="flex items-center justify-between p-3 rounded-lg bg-muted/10 border border-border/30 hover:border-border/60 transition-colors group"
-        layout
-        initial={{ opacity: 0, x: -10 }}
-        animate={{ opacity: 1, x: 0 }}
       >
         <div className="flex items-center gap-3 flex-1">
           <span className="font-medium text-sm text-foreground">{dp.name}</span>
@@ -148,14 +318,14 @@ export function SectionsTab() {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted-foreground">
-            {dp.minPrefects ?? 0} – {dp.maxPrefects || 1} prefects
+            {dp.minPrefects ?? 0} – {dp.maxPrefects === 0 ? '∞' : (dp.maxPrefects || 1)} prefects
           </span>
           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { removeDutyPlace(dp.id); toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
           </div>
         </div>
-      </motion.div>
+      </div>
     );
   };
 
@@ -169,31 +339,34 @@ export function SectionsTab() {
     }
 
     return (
-      <motion.div className="grid grid-cols-2 md:grid-cols-7 gap-2 items-end p-3 rounded-lg bg-muted/10 border border-primary/20" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <Input placeholder="Place name" value={newDpForm.name} onChange={(e) => setNewDpForm({ ...newDpForm, name: e.target.value })} className="bg-muted/30 text-sm" />
-        <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.isSpecial} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, isSpecial: !!c })} /> Special</label>
-        <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.isMandatory} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, isMandatory: !!c })} /> Mandatory</label>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground">Min</span>
-          <Input type="number" min={0} max={10} value={newDpForm.minPrefects} onChange={(e) => setNewDpForm({ ...newDpForm, minPrefects: parseInt(e.target.value) || 0 })} className="w-14 bg-muted/30 text-sm" />
+      <div className="space-y-3 p-3 rounded-lg bg-muted/10 border border-primary/20">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-2 items-end">
+          <Input placeholder="Place name" value={newDpForm.name} onChange={(e) => setNewDpForm({ ...newDpForm, name: e.target.value })} className="bg-muted/30 text-sm" />
+          <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.isSpecial} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, isSpecial: !!c })} /> Special</label>
+          <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.isMandatory} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, isMandatory: !!c })} /> Mandatory</label>
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-muted-foreground">Min</span>
+            <Input type="number" min={0} max={10} value={newDpForm.minPrefects} onChange={(e) => setNewDpForm({ ...newDpForm, minPrefects: parseInt(e.target.value) || 0 })} className="w-14 bg-muted/30 text-sm" />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-muted-foreground">Max</span>
+            <Input type="number" min={0} max={50} value={newDpForm.maxPrefects} onChange={(e) => setNewDpForm({ ...newDpForm, maxPrefects: parseInt(e.target.value) || 0 })} className="w-14 bg-muted/30 text-sm" />
+          </div>
+          <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.requiredGenderBalance} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, requiredGenderBalance: !!c })} /> Gender Bal.</label>
+          <div className="flex gap-1">
+            <Button size="sm" onClick={() => {
+              if (!newDpForm.name) return;
+              if (newDpForm.minPrefects > newDpForm.maxPrefects) { toast.error('Min cannot exceed max'); return; }
+              addDutyPlace({ ...newDpForm });
+              setNewDpForm({ ...newDpForm, name: '' });
+              setShowAddDp(null);
+              toast.success('Added');
+            }}>Add</Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowAddDp(null)}>×</Button>
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground">Max</span>
-          <Input type="number" min={1} max={10} value={newDpForm.maxPrefects} onChange={(e) => setNewDpForm({ ...newDpForm, maxPrefects: parseInt(e.target.value) || 1 })} className="w-14 bg-muted/30 text-sm" />
-        </div>
-        <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.requiredGenderBalance} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, requiredGenderBalance: !!c })} /> Gender Bal.</label>
-        <div className="flex gap-1">
-          <Button size="sm" onClick={() => {
-            if (!newDpForm.name) return;
-            if (newDpForm.minPrefects > newDpForm.maxPrefects) { toast.error('Min cannot exceed max'); return; }
-            addDutyPlace({ ...newDpForm });
-            setNewDpForm({ ...newDpForm, name: '' });
-            setShowAddDp(null);
-            toast.success('Added');
-          }}>Add</Button>
-          <Button size="sm" variant="ghost" onClick={() => setShowAddDp(null)}>×</Button>
-        </div>
-      </motion.div>
+        {renderEligibility(newDpForm as any, setNewDpForm as any)}
+      </div>
     );
   };
 
@@ -228,16 +401,12 @@ export function SectionsTab() {
       {/* Sections */}
       {sections.map((section, i) => {
         const sectionDps = dutyPlaces.filter((dp) => dp.sectionId === section.id);
-        const eligibleMaleHeads = getEligibleHeads(section.id, 'Male');
-        const eligibleFemaleCoHeads = getEligibleHeads(section.id, 'Female');
+        const eligibleHeads = getEligibleHeads(section.id);
 
         return (
-          <motion.div
+          <div
             key={section.id}
             className="duty-card space-y-4"
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
           >
             <div className="flex items-center justify-between">
               {editingSectionId === section.id ? (
@@ -266,22 +435,28 @@ export function SectionsTab() {
             {/* Head / Co-Head */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Section Head (Male)</label>
-                <Select value={section.headId || '_none'} onValueChange={(v) => setSectionHead(section.id, v === '_none' ? undefined : v)}>
+                <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Section Head</label>
+                <Select value={section.headId || '_none'} onValueChange={async (v) => {
+                  const err = await setSectionHead(section.id, v === '_none' ? undefined : v);
+                  if (err) toast.error(err);
+                }}>
                   <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select head..." /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="_none">— None —</SelectItem>
-                    {eligibleMaleHeads.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade})</SelectItem>)}
+                    {eligibleHeads.filter((p) => p.id !== section.coHeadId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Co-Head (Female)</label>
-                <Select value={section.coHeadId || '_none'} onValueChange={(v) => setSectionCoHead(section.id, v === '_none' ? undefined : v)}>
+                <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Co-Head</label>
+                <Select value={section.coHeadId || '_none'} onValueChange={async (v) => {
+                  const err = await setSectionCoHead(section.id, v === '_none' ? undefined : v);
+                  if (err) toast.error(err);
+                }}>
                   <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select co-head..." /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="_none">— None —</SelectItem>
-                    {eligibleFemaleCoHeads.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade})</SelectItem>)}
+                    {eligibleHeads.filter((p) => p.id !== section.headId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -291,12 +466,12 @@ export function SectionsTab() {
               {sectionDps.map(renderDpRow)}
             </div>
             {renderAddDpForm(section.id)}
-          </motion.div>
+          </div>
         );
       })}
 
       {/* General Duties */}
-      <motion.div className="duty-card space-y-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="duty-card space-y-4">
         <h3 className="font-bold text-foreground flex items-center gap-2">
           <MapPin className="h-4 w-4 text-primary" />
           GENERAL DUTIES
@@ -306,7 +481,7 @@ export function SectionsTab() {
           {generalDps.map(renderDpRow)}
         </div>
         {renderAddDpForm('__general__')}
-      </motion.div>
+      </div>
     </div>
   );
 }
