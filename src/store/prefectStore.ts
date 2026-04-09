@@ -31,8 +31,8 @@ interface PrefectStore {
   initialized: boolean;
 
   loadFromDB: () => Promise<void>;
-  addPrefect: (p: Omit<Prefect, 'id' | 'level'>) => Promise<void>;
-  updatePrefect: (id: string, p: Partial<Prefect>) => Promise<void>;
+  addPrefect: (p: Omit<Prefect, 'id' | 'level'>) => Promise<string | null>;
+  updatePrefect: (id: string, p: Partial<Prefect>) => Promise<string | null>;
   removePrefect: (id: string) => Promise<string | null>;
   importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<string | null>;
   addSection: (name: string) => Promise<string | null>;
@@ -225,7 +225,10 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
             ? 'games_captain'
             : 'prefect',
     }).select().single();
-    if (error || !data) { console.error(error); return; }
+    if (error || !data) {
+      console.error(error);
+      return error?.message || 'Failed to save prefect';
+    }
     const prefect: Prefect = {
       id: data.id, name: data.name, regNo: data.reg_number, grade: data.grade,
       gender: p.gender, level: calculateLevel(data.grade),
@@ -235,6 +238,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const nextPoints = { ...get().standingsPoints, [prefect.id]: BASE_STANDING_POINTS };
     set((s) => ({ prefects: [...s.prefects, prefect], standingsPoints: nextPoints }));
     await persistStandingsState(nextPoints, get().pointLogs);
+    return null;
   },
 
   updatePrefect: async (id, updates) => {
@@ -250,12 +254,17 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       const isGC = updates.isGamesCaptain ?? current?.isGamesCaptain;
       dbUpdates.role = isHP ? 'head_prefect' : isDHP ? 'deputy_head_prefect' : isGC ? 'games_captain' : 'prefect';
     }
-    await supabase.from('prefects').update(dbUpdates).eq('id', id);
+    const { error } = await supabase.from('prefects').update(dbUpdates).eq('id', id);
+    if (error) {
+      console.error(error);
+      return error.message || 'Failed to update prefect';
+    }
     set((s) => ({
       prefects: s.prefects.map((p) =>
         p.id === id ? { ...p, ...updates, level: updates.grade ? calculateLevel(updates.grade) : p.level } : p
       ),
     }));
+    return null;
   },
 
   removePrefect: async (id) => {

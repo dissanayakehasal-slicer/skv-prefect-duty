@@ -66,22 +66,24 @@ export function PrefectsTab() {
       });
   }, [deferredSearch, dutyPrefectIds, leaderPrefectIds, prefects, statusFilter]);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!form.name || !form.regNo) { toast.error('Name and Reg No required'); return; }
     if (form.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
     if (form.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
-    addPrefect(form);
+    const err = await addPrefect(form);
+    if (err) { toast.error(`Save failed: ${err}`); return; }
     setForm({ name: '', regNo: '', grade: 5, gender: 'Male', isHeadPrefect: false, isDeputyHeadPrefect: false, isGamesCaptain: false });
     setShowAdd(false);
     toast.success('Prefect added');
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     if (!editId) return;
     const current = prefects.find((p) => p.id === editId);
     if (form.isHeadPrefect && !current?.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
     if (form.isDeputyHeadPrefect && !current?.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
-    updatePrefect(editId, form);
+    const err = await updatePrefect(editId, form);
+    if (err) { toast.error(`Update failed: ${err}`); return; }
     setEditId(null);
     toast.success('Prefect updated');
   };
