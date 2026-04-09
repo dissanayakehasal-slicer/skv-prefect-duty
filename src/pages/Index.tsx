@@ -4,7 +4,6 @@ import { SectionsTab } from '@/components/SectionsTab';
 import { AssignmentsTab } from '@/components/AssignmentsTab';
 import { StandingsTab } from '@/components/StandingsTab';
 import { ValidationPanel } from '@/components/ValidationPanel';
-import { AdminLogin } from '@/components/AdminLogin';
 import { ScreenSaver } from '@/components/ScreenSaver';
 import { exportPDF } from '@/utils/exportPdf';
 import { Button } from '@/components/ui/button';
@@ -26,7 +25,7 @@ const SCREENSAVER_TIMEOUT = 3 * 60 * 1000; // 3 minutes
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState<TabId>('prefects');
-  const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('admin_authenticated') === 'true');
+  const authenticated = true;
   const [screenSaverActive, setScreenSaverActive] = useState(false);
   const { prefects, sections, dutyPlaces, assignments, loadFromDB, loading, initialized } = usePrefectStore(useShallow((state) => ({
     prefects: state.prefects,
@@ -62,10 +61,6 @@ const Index = () => {
     if (authenticated && !initialized) loadFromDB();
   }, [authenticated, initialized, loadFromDB]);
 
-  if (!authenticated) {
-    return <AdminLogin onAuthenticated={() => setAuthenticated(true)} />;
-  }
-
   if (loading && !initialized) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -81,11 +76,6 @@ const Index = () => {
       </div>
     );
   }
-
-  const handleLogout = () => {
-    sessionStorage.removeItem('admin_authenticated');
-    setAuthenticated(false);
-  };
 
   return (
     <>
@@ -119,9 +109,6 @@ const Index = () => {
             <div className="flex items-center gap-2">
               <Button onClick={exportPDF} size="sm" variant="outline" className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary">
                 <FileDown className="h-4 w-4 mr-1.5" /> Export PDF
-              </Button>
-              <Button onClick={handleLogout} size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive">
-                <LogOut className="h-4 w-4" />
               </Button>
             </div>
           </div>
