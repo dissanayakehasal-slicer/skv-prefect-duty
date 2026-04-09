@@ -34,7 +34,7 @@ interface PrefectStore {
   addPrefect: (p: Omit<Prefect, 'id' | 'level'>) => Promise<void>;
   updatePrefect: (id: string, p: Partial<Prefect>) => Promise<void>;
   removePrefect: (id: string) => Promise<string | null>;
-  importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<void>;
+  importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<string | null>;
   addSection: (name: string) => Promise<string | null>;
   removeSection: (id: string) => Promise<void>;
   renameSection: (id: string, name: string) => Promise<void>;
@@ -286,7 +286,10 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       ) as 'prefect' | 'head_prefect' | 'deputy_head_prefect' | 'games_captain',
     }));
     const { data, error } = await supabase.from('prefects').insert(rows).select();
-    if (error || !data) { console.error(error); return; }
+    if (error || !data) {
+      console.error(error);
+      return error?.message || 'Import failed';
+    }
     const newPrefects: Prefect[] = data.map((d) => ({
       id: d.id, name: d.name, regNo: d.reg_number, grade: d.grade,
       gender: (d.gender === 'M' ? 'Male' : 'Female') as Gender,
@@ -300,6 +303,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     });
     set((s) => ({ prefects: [...s.prefects, ...newPrefects], standingsPoints: nextPoints }));
     await persistStandingsState(nextPoints, get().pointLogs);
+    return null;
   },
 
   addSection: async (name) => {

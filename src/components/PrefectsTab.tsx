@@ -18,6 +18,7 @@ import {
 import { Plus, Trash2, Upload, Download, Edit2, Crown, Shield, Trophy, User, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
+import { normalizeHeader, parseCsv } from '@/utils/csv';
 
 export function PrefectsTab() {
   const { prefects, assignments, sections, addPrefect, updatePrefect, removePrefect, importPrefects } = usePrefectStore(useShallow((state) => ({
@@ -98,14 +99,56 @@ export function PrefectsTab() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const lines = text.split('\n').slice(1).filter(Boolean);
-      const parsed = lines.map((line) => {
-        const [name, regNo, grade, gender, hp, dhp, gc] = line.split(',').map((s) => s.trim());
-        return { name, regNo, grade: parseInt(grade) || 5, gender: (gender === 'Female' ? 'Female' : 'Male') as Gender, isHeadPrefect: hp === 'true', isDeputyHeadPrefect: dhp === 'true', isGamesCaptain: gc === 'true' };
+    reader.onload = async (ev) => {
+      const text = (ev.target?.result as string) || '';
+      const { headers, rows } = parseCsv(text);
+      const headerIndex: Record<string, number> = {};
+      headers.forEach((h, idx) => {
+        const key = normalizeHeader(h);
+        if (key) headerIndex[key] = idx;
       });
-      importPrefects(parsed);
+
+      const get = (r: string[], key: string, fallbackIdx?: number) => {
+        const idx = headerIndex[key];
+        if (idx !== undefined) return (r[idx] || '').trim();
+        if (fallbackIdx !== undefined) return (r[fallbackIdx] || '').trim();
+        return '';
+      };
+
+      const parseBool = (v: string) => {
+        const s = (v || '').trim().toLowerCase();
+        return s === 'true' || s === '1' || s === 'yes' || s === 'y';
+      };
+
+      const parsed = rows
+        .map((r) => {
+          const name = get(r, 'name', 0);
+          const regNo = get(r, 'regno') || get(r, 'regnumber') || get(r, 'reg') || (r[1] || '').trim();
+          const gradeRaw = get(r, 'grade', 2);
+          const genderRaw = get(r, 'gender', 3).toLowerCase();
+          const gender: Gender = genderRaw === 'female' || genderRaw === 'f' ? 'Female' : 'Male';
+          return {
+            name,
+            regNo,
+            grade: parseInt(gradeRaw, 10) || 5,
+            gender,
+            isHeadPrefect: parseBool(get(r, 'headprefect') || get(r, 'hp') || (r[4] || '')),
+            isDeputyHeadPrefect: parseBool(get(r, 'deputyheadprefect') || get(r, 'deputyhead') || get(r, 'dhp') || (r[5] || '')),
+            isGamesCaptain: parseBool(get(r, 'gamescaptain') || get(r, 'gc') || (r[6] || '')),
+          };
+        })
+        .filter((p) => p.name && p.regNo);
+
+      if (parsed.length === 0) {
+        toast.error('No valid prefect rows found in CSV');
+        return;
+      }
+
+      const err = await importPrefects(parsed);
+      if (err) {
+        toast.error(`Import failed: ${err}`);
+        return;
+      }
       toast.success(`Imported ${parsed.length} prefects`);
     };
     reader.readAsText(file);
