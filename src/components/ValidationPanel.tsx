@@ -6,7 +6,11 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 
-export function ValidationPanel() {
+interface ValidationPanelProps {
+  readOnly?: boolean;
+}
+
+export function ValidationPanel({ readOnly = false }: ValidationPanelProps) {
   const { prefects, sections, dutyPlaces, assignments, autoFixConflicts } = usePrefectStore(useShallow((state) => ({
     prefects: state.prefects,
     sections: state.sections,
@@ -58,6 +62,7 @@ export function ValidationPanel() {
             </div>
           </div>
 
+          {!readOnly && (
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
@@ -71,6 +76,7 @@ export function ValidationPanel() {
               Auto-fix conflicts
             </Button>
           </div>
+          )}
 
             {errors.length > 0 && (
               <div className="space-y-2">

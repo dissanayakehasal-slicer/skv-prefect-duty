@@ -10,7 +10,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { normalizeHeader, parseCsv } from '@/utils/csv';
 import { GRADE_RANGE } from '@/types/prefect';
 
-export function SectionsTab() {
+interface SectionsTabProps {
+  /** Add/remove sections, duty places, CSV import */
+  canManageStructure?: boolean;
+  /** Edit section heads, duty place rows, and rules. False for viewer (read-only). */
+  canEditDutyContent?: boolean;
+}
+
+export function SectionsTab({ canManageStructure = true, canEditDutyContent = true }: SectionsTabProps) {
   const {
     sections, dutyPlaces, prefects,
     addSection, removeSection, renameSection,
@@ -166,7 +173,7 @@ export function SectionsTab() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const text = ev.target?.result as string;
       const { headers, rows } = parseCsv(text);
 
@@ -244,7 +251,11 @@ export function SectionsTab() {
         .map((dp) => dp.__sectionRaw);
 
       const cleaned = parsed.map(({ __sectionRaw, ...dp }) => dp);
-      importDutyPlaces(cleaned);
+      const err = await importDutyPlaces(cleaned);
+      if (err) {
+        toast.error(`Duty place import failed: ${err}`);
+        return;
+      }
 
       if (unknownSections.length > 0) {
         const unique = Array.from(new Set(unknownSections)).slice(0, 5);
@@ -272,7 +283,7 @@ export function SectionsTab() {
   const generalDps = dutyPlaces.filter((dp) => !dp.sectionId);
 
   const renderDpRow = (dp: typeof dutyPlaces[0]) => {
-    if (editingDpId === dp.id) {
+    if (editingDpId === dp.id && canEditDutyContent) {
       return (
         <div key={dp.id} className="space-y-3 p-3 rounded-lg bg-muted/20 border border-primary/20">
           <div className="grid grid-cols-2 md:grid-cols-8 gap-2 items-center">
@@ -320,16 +331,23 @@ export function SectionsTab() {
           <span className="text-xs text-muted-foreground">
             {dp.minPrefects ?? 0} – {dp.maxPrefects === 0 ? '∞' : (dp.maxPrefects || 1)} prefects
           </span>
+          {(canEditDutyContent || canManageStructure) && (
           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { removeDutyPlace(dp.id); toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
+            {canEditDutyContent && (
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
+            )}
+            {canManageStructure && (
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { removeDutyPlace(dp.id); toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
+            )}
           </div>
+          )}
         </div>
       </div>
     );
   };
 
   const renderAddDpForm = (groupId: string) => {
+    if (!canManageStructure || !canEditDutyContent) return null;
     if (showAddDp !== groupId) {
       return (
         <Button variant="outline" size="sm" className="border-dashed border-border/50 text-muted-foreground hover:text-foreground" onClick={() => { setShowAddDp(groupId); setNewDpForm({ ...newDpForm, sectionId: groupId === '__general__' ? '' : groupId, name: '' }); }}>
@@ -378,6 +396,8 @@ export function SectionsTab() {
           <h2 className="text-xl font-bold text-foreground">Sections & Duty Places</h2>
           <p className="text-sm text-muted-foreground mt-0.5">{sections.length} sections · {dutyPlaces.length} duty places</p>
         </div>
+        {canManageStructure && (
+        <>
         <Button variant="outline" size="sm" onClick={downloadTemplate}>
           <Download className="h-4 w-4 mr-1" /> Template CSV
         </Button>
@@ -396,6 +416,8 @@ export function SectionsTab() {
             <Plus className="h-4 w-4 mr-1" /> Add
           </Button>
         </div>
+        </>
+        )}
       </div>
 
       {/* Sections */}
@@ -422,43 +444,59 @@ export function SectionsTab() {
                   <MapPin className="h-4 w-4 text-primary" />
                   {section.name}
                   <Badge variant="outline" className="text-xs">{sectionDps.length}</Badge>
+                  {canManageStructure && (
                   <Button variant="ghost" size="sm" className="h-6 w-6 p-0 opacity-50 hover:opacity-100" onClick={() => { setEditingSectionId(section.id); setEditingSectionName(section.name); }}>
                     <Pencil className="h-3 w-3" />
                   </Button>
+                  )}
                 </h3>
               )}
+              {canManageStructure && (
               <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive" onClick={() => { removeSection(section.id); toast.success('Section removed'); }}>
                 <Trash2 className="h-4 w-4" />
               </Button>
+              )}
             </div>
 
             {/* Head / Co-Head */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Section Head</label>
-                <Select value={section.headId || '_none'} onValueChange={async (v) => {
-                  const err = await setSectionHead(section.id, v === '_none' ? undefined : v);
-                  if (err) toast.error(err);
-                }}>
-                  <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select head..." /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">— None —</SelectItem>
-                    {eligibleHeads.filter((p) => p.id !== section.coHeadId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {canEditDutyContent ? (
+                  <Select value={section.headId || '_none'} onValueChange={async (v) => {
+                    const err = await setSectionHead(section.id, v === '_none' ? undefined : v);
+                    if (err) toast.error(err);
+                  }}>
+                    <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select head..." /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">— None —</SelectItem>
+                      {eligibleHeads.filter((p) => p.id !== section.coHeadId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="text-sm text-foreground py-2 px-1 rounded-md bg-muted/20 border border-border/40">
+                    {section.headId ? (prefects.find((p) => p.id === section.headId)?.name ?? '—') : '—'}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Co-Head</label>
-                <Select value={section.coHeadId || '_none'} onValueChange={async (v) => {
-                  const err = await setSectionCoHead(section.id, v === '_none' ? undefined : v);
-                  if (err) toast.error(err);
-                }}>
-                  <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select co-head..." /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">— None —</SelectItem>
-                    {eligibleHeads.filter((p) => p.id !== section.headId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                {canEditDutyContent ? (
+                  <Select value={section.coHeadId || '_none'} onValueChange={async (v) => {
+                    const err = await setSectionCoHead(section.id, v === '_none' ? undefined : v);
+                    if (err) toast.error(err);
+                  }}>
+                    <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select co-head..." /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">— None —</SelectItem>
+                      {eligibleHeads.filter((p) => p.id !== section.headId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="text-sm text-foreground py-2 px-1 rounded-md bg-muted/20 border border-border/40">
+                    {section.coHeadId ? (prefects.find((p) => p.id === section.coHeadId)?.name ?? '—') : '—'}
+                  </p>
+                )}
               </div>
             </div>
 

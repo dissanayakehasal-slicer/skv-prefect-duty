@@ -8,9 +8,17 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { useShallow } from 'zustand/react/shallow';
+import type { PointLog } from '@/types/prefect';
 
-export function StandingsTab() {
+interface StandingsTabProps {
+  /** Duty editors can view standings but not change points. */
+  canEditStandings?: boolean;
+}
+
+export function StandingsTab({ canEditStandings = true }: StandingsTabProps) {
   const { prefects, pointLogs, standingsPoints, applyPointChange } = usePrefectStore(useShallow((state) => ({
     prefects: state.prefects,
     pointLogs: state.pointLogs,
@@ -30,6 +38,20 @@ export function StandingsTab() {
     const map = new Map<string, typeof pointLogs[number]>();
     pointLogs.forEach((log) => {
       if (!map.has(log.prefectId)) map.set(log.prefectId, log);
+    });
+    return map;
+  }, [pointLogs]);
+
+  /** All log entries per prefect, newest first */
+  const logsByPrefectId = useMemo(() => {
+    const map = new Map<string, PointLog[]>();
+    for (const log of pointLogs) {
+      const list = map.get(log.prefectId);
+      if (list) list.push(log);
+      else map.set(log.prefectId, [log]);
+    }
+    map.forEach((logs) => {
+      logs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     });
     return map;
   }, [pointLogs]);
@@ -113,6 +135,9 @@ export function StandingsTab() {
         <div>
           <h2 className="text-xl font-bold text-foreground">Standings</h2>
           <p className="text-sm text-muted-foreground mt-0.5">Every prefect starts at 1000 points</p>
+          {!canEditStandings && (
+            <p className="text-xs text-muted-foreground mt-1">View only — only administrators can change points.</p>
+          )}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full md:w-auto">
           <div className="duty-card min-w-[170px]">
@@ -143,10 +168,12 @@ export function StandingsTab() {
                   className="pl-10 h-11 bg-muted/30 border-border/50"
                 />
               </div>
+              {canEditStandings && (
               <label className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Checkbox checked={allVisibleSelected} onCheckedChange={(checked) => toggleVisibleSelection(!!checked)} />
                 Select visible
               </label>
+              )}
             </div>
           </div>
 
@@ -160,6 +187,7 @@ export function StandingsTab() {
             {standings.map((prefect, index) => {
               const points = pointsByPrefect[prefect.id] ?? 1000;
               const latestLog = latestLogByPrefectId.get(prefect.id);
+              const prefectLogs = logsByPrefectId.get(prefect.id) ?? [];
 
               return (
                 <div
@@ -168,13 +196,65 @@ export function StandingsTab() {
                 >
                   <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
                     <div className="flex items-start gap-3">
+                      {canEditStandings && (
                       <Checkbox
                         checked={selectedPrefectIds.includes(prefect.id)}
                         onCheckedChange={(checked) => togglePrefectSelection(prefect.id, !!checked)}
                         className="mt-1"
                       />
-                      <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold">
-                        #{index + 1}
+                      )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="h-11 w-11 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold">
+                          #{index + 1}
+                        </div>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="relative h-9 w-9 text-muted-foreground hover:text-primary"
+                              aria-label={`Point history for ${prefect.name}`}
+                            >
+                              <History className="h-4 w-4" />
+                              {prefectLogs.length > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium leading-none text-primary-foreground">
+                                  {prefectLogs.length > 99 ? '99+' : prefectLogs.length}
+                                </span>
+                              )}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[min(100vw-2rem,22rem)] p-0" align="start">
+                            <div className="border-b border-border/40 px-3 py-2.5">
+                              <p className="text-sm font-semibold text-foreground">Point history</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">{prefect.name}</p>
+                            </div>
+                            {prefectLogs.length === 0 ? (
+                              <p className="px-3 py-4 text-sm text-muted-foreground">No point changes logged yet.</p>
+                            ) : (
+                              <ScrollArea className="max-h-72">
+                                <div className="p-2 space-y-2">
+                                  {prefectLogs.map((log) => (
+                                    <div
+                                      key={log.id}
+                                      className="flex flex-col gap-1 rounded-md border border-border/30 bg-muted/10 px-3 py-2 text-sm"
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <Badge variant={log.amount >= 0 ? 'default' : 'destructive'} className="shrink-0">
+                                          {log.amount >= 0 ? `+${log.amount}` : log.amount}
+                                        </Badge>
+                                        <span className="text-xs text-muted-foreground text-right">
+                                          {formatDistanceToNow(new Date(log.createdAt), { addSuffix: true })}
+                                        </span>
+                                      </div>
+                                      <p className="text-muted-foreground text-xs leading-relaxed">{log.reason || '—'}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </ScrollArea>
+                            )}
+                          </PopoverContent>
+                        </Popover>
                       </div>
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -199,6 +279,7 @@ export function StandingsTab() {
                     </div>
                   </div>
 
+                  {canEditStandings && (
                   <div className="grid grid-cols-1 lg:grid-cols-[110px_1fr_auto] gap-2">
                     <Input
                       type="number"
@@ -223,6 +304,7 @@ export function StandingsTab() {
                       </Button>
                     </div>
                   </div>
+                  )}
                 </div>
               );
             })}
@@ -230,6 +312,7 @@ export function StandingsTab() {
         </div>
 
         <div className="space-y-4">
+          {canEditStandings && (
           <div className="duty-card space-y-4">
             <div className="flex items-center gap-2">
               <Users className="h-4 w-4 text-primary" />
@@ -261,6 +344,7 @@ export function StandingsTab() {
               </Button>
             </div>
           </div>
+          )}
 
           <div className="duty-card space-y-4">
             <div className="flex items-center gap-2">

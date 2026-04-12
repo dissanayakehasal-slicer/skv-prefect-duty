@@ -1,6 +1,6 @@
 import { useDeferredValue, useMemo, useState } from 'react';
 import { usePrefectStore } from '@/store/prefectStore';
-import { Prefect, Gender, GRADE_RANGE, calculateLevel } from '@/types/prefect';
+import { Prefect, Gender, GRADE_RANGE, calculateLevel, MAX_GAMES_CAPTAINS } from '@/types/prefect';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -20,7 +20,12 @@ import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 import { normalizeHeader, parseCsv } from '@/utils/csv';
 
-export function PrefectsTab() {
+interface PrefectsTabProps {
+  /** When false, prefect list is view-only (duty editor role). */
+  canManagePrefects?: boolean;
+}
+
+export function PrefectsTab({ canManagePrefects = true }: PrefectsTabProps) {
   const { prefects, assignments, sections, addPrefect, updatePrefect, removePrefect, importPrefects } = usePrefectStore(useShallow((state) => ({
     prefects: state.prefects,
     assignments: state.assignments,
@@ -41,6 +46,12 @@ export function PrefectsTab() {
   const headPrefectCount = useMemo(() => prefects.filter((p) => p.isHeadPrefect).length, [prefects]);
   const deputyHeadPrefectCount = useMemo(() => prefects.filter((p) => p.isDeputyHeadPrefect).length, [prefects]);
   const gamesCaptainCount = useMemo(() => prefects.filter((p) => p.isGamesCaptain).length, [prefects]);
+  /** GC slots taken by others (when editing, current row excluded so the checkbox can be cleared) */
+  const gamesCaptainSlotsUsedByOthers = useMemo(
+    () => prefects.filter((p) => p.isGamesCaptain && p.id !== editId).length,
+    [prefects, editId],
+  );
+  const gamesCaptainFull = gamesCaptainSlotsUsedByOthers >= MAX_GAMES_CAPTAINS;
   const dutyPrefectIds = useMemo(() => new Set(assignments.map((assignment) => assignment.prefectId)), [assignments]);
   const leaderPrefectIds = useMemo(() => {
     const ids = new Set<string>();
@@ -70,6 +81,7 @@ export function PrefectsTab() {
     if (!form.name || !form.regNo) { toast.error('Name and Reg No required'); return; }
     if (form.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
     if (form.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
+    if (form.isGamesCaptain && gamesCaptainCount >= MAX_GAMES_CAPTAINS) { toast.error(`Maximum ${MAX_GAMES_CAPTAINS} Games Captains allowed`); return; }
     const err = await addPrefect(form);
     if (err) { toast.error(`Save failed: ${err}`); return; }
     setForm({ name: '', regNo: '', grade: 5, gender: 'Male', isHeadPrefect: false, isDeputyHeadPrefect: false, isGamesCaptain: false });
@@ -82,6 +94,10 @@ export function PrefectsTab() {
     const current = prefects.find((p) => p.id === editId);
     if (form.isHeadPrefect && !current?.isHeadPrefect && headPrefectCount >= 2) { toast.error('Maximum 2 Head Prefects allowed'); return; }
     if (form.isDeputyHeadPrefect && !current?.isDeputyHeadPrefect && deputyHeadPrefectCount >= 4) { toast.error('Maximum 4 Deputy Head Prefects allowed'); return; }
+    if (form.isGamesCaptain && !current?.isGamesCaptain && gamesCaptainSlotsUsedByOthers >= MAX_GAMES_CAPTAINS) {
+      toast.error(`Maximum ${MAX_GAMES_CAPTAINS} Games Captains allowed`);
+      return;
+    }
     const err = await updatePrefect(editId, form);
     if (err) { toast.error(`Update failed: ${err}`); return; }
     setEditId(null);
@@ -197,6 +213,7 @@ export function PrefectsTab() {
           <h2 className="text-xl font-bold text-foreground">Prefects</h2>
           <p className="text-sm text-muted-foreground mt-0.5">{prefects.length} total members</p>
         </div>
+        {canManagePrefects && (
         <div className="flex gap-2">
           <label className="cursor-pointer">
             <input type="file" accept=".csv" className="hidden" onChange={handleImport} />
@@ -207,6 +224,7 @@ export function PrefectsTab() {
             <Plus className="h-4 w-4 mr-1" /> Add Prefect
           </Button>
         </div>
+        )}
       </div>
 
       {/* Stats cards */}
@@ -235,7 +253,7 @@ export function PrefectsTab() {
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Games Captains</p>
-            <p className="text-lg font-bold text-foreground">{gamesCaptainCount}</p>
+            <p className="text-lg font-bold text-foreground">{gamesCaptainCount}<span className="text-xs text-muted-foreground font-normal">/{MAX_GAMES_CAPTAINS}</span></p>
           </div>
         </div>
         <div className="duty-card flex items-center gap-3">
@@ -283,7 +301,7 @@ export function PrefectsTab() {
       </div>
 
       {/* Add/Edit Form */}
-      {(showAdd || editId) && (
+      {canManagePrefects && (showAdd || editId) && (
           <div className="duty-card space-y-4">
             <h3 className="font-semibold text-foreground text-sm">{editId ? 'Edit Prefect' : 'New Prefect'}</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -310,8 +328,17 @@ export function PrefectsTab() {
                 <input type="checkbox" checked={form.isDeputyHeadPrefect} onChange={(e) => setForm({ ...form, isDeputyHeadPrefect: e.target.checked, isHeadPrefect: false, isGamesCaptain: false })} className="accent-primary" />
                 <span className="text-muted-foreground">Deputy Head</span>
               </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="checkbox" checked={form.isGamesCaptain} onChange={(e) => setForm({ ...form, isGamesCaptain: e.target.checked, isHeadPrefect: false, isDeputyHeadPrefect: false })} className="accent-primary" />
+              <label
+                className={`flex items-center gap-2 text-sm ${!form.isGamesCaptain && gamesCaptainFull ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                title={!form.isGamesCaptain && gamesCaptainFull ? `Maximum ${MAX_GAMES_CAPTAINS} Games Captains` : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={form.isGamesCaptain}
+                  disabled={!form.isGamesCaptain && gamesCaptainFull}
+                  onChange={(e) => setForm({ ...form, isGamesCaptain: e.target.checked, isHeadPrefect: false, isDeputyHeadPrefect: false })}
+                  className="accent-primary"
+                />
                 <span className="text-muted-foreground">Games Captain</span>
               </label>
             </div>
@@ -350,10 +377,12 @@ export function PrefectsTab() {
                       <p className="text-xs text-muted-foreground font-mono">{p.regNo}</p>
                     </div>
                   </div>
+                  {canManagePrefects && (
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEdit(p)}><Edit2 className="h-3 w-3" /></Button>
                     <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setDeleteTarget(p)}><Trash2 className="h-3 w-3 text-destructive" /></Button>
                   </div>
+                  )}
                 </div>
                 <div className="mt-3 flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="text-xs">G{p.grade}</Badge>

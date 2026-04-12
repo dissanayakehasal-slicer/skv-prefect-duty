@@ -53,13 +53,16 @@ export interface PointLog {
 
 export interface ValidationIssue {
   type: 'error' | 'warning';
-  category: 'grade_mismatch' | 'single_duty' | 'gender_violation' | 'vacant_mandatory' | 'same_age' | 'below_minimum';
+  category: 'grade_mismatch' | 'single_duty' | 'gender_violation' | 'vacant_mandatory' | 'same_age' | 'below_minimum' | 'leadership_cap';
   message: string;
   prefectId?: string;
   dutyPlaceId?: string;
 }
 
 export const GRADE_RANGE = [4, 5, 6, 7, 8, 9, 10, 11] as const;
+
+/** Leadership caps (enforced in UI and prefect store) */
+export const MAX_GAMES_CAPTAINS = 2;
 
 export function calculateLevel(grade: number): Level {
   return grade <= 5 ? 'Junior' : 'Senior';

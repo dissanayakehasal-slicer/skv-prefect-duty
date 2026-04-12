@@ -1,13 +1,100 @@
 import { useMemo, useState } from 'react';
 import { usePrefectStore } from '@/store/prefectStore';
+import type { Prefect } from '@/types/prefect';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Wand2, Trash2, UserPlus, AlertCircle, CheckCircle2, Circle, Crown, Shield, Trophy } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { cn } from '@/lib/utils';
+import { Wand2, Trash2, UserPlus, AlertCircle, CheckCircle2, Circle, Crown, Shield, Trophy, ChevronsUpDown, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 
-export function AssignmentsTab() {
+function SearchablePrefectPicker({
+  value,
+  onValueChange,
+  options,
+  disabled,
+}: {
+  value: string;
+  onValueChange: (id: string) => void;
+  options: Prefect[];
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((p) => p.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled || options.length === 0}
+          className={cn(
+            'w-44 h-8 justify-between text-xs font-normal px-2 bg-muted/20 border-border/40',
+            !value && 'text-muted-foreground',
+          )}
+        >
+          <span className="truncate">
+            {selected
+              ? `${selected.name} (G${selected.grade}, ${selected.gender?.[0] ?? '?'})`
+              : options.length === 0
+                ? 'No prefects'
+                : 'Pick prefect…'}
+          </span>
+          <ChevronsUpDown className="ml-1 h-3.5 w-3.5 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,20rem)] p-0" align="end">
+        {/* Only mount cmdk when open — one list per row × all prefects was freezing the app */}
+        {open && (
+          <Command shouldFilter>
+            <CommandInput placeholder="Search name, reg no, grade…" className="h-9" />
+            <CommandList>
+              <CommandEmpty>No prefect found.</CommandEmpty>
+              <CommandGroup>
+                {options.map((p) => (
+                  <CommandItem
+                    key={p.id}
+                    value={`${p.name} ${p.regNo} ${p.id}`}
+                    keywords={[String(p.grade), p.gender ?? '', p.regNo]}
+                    onSelect={() => {
+                      onValueChange(p.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={cn('mr-2 h-4 w-4 shrink-0', value === p.id ? 'opacity-100' : 'opacity-0')} />
+                    <span className="truncate">
+                      {p.name} <span className="text-muted-foreground">· {p.regNo}</span> (G{p.grade},{' '}
+                      {p.gender?.[0] ?? '—'})
+                    </span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+interface AssignmentsTabProps {
+  /** Viewer role: no assign, auto, or clear */
+  readOnly?: boolean;
+}
+
+export function AssignmentsTab({ readOnly = false }: AssignmentsTabProps) {
   const { sections, dutyPlaces, prefects, assignments, assignPrefect, removeAssignment, autoAssign, autoFillRemaining, clearAllAssignments } = usePrefectStore(useShallow((state) => ({
     sections: state.sections,
     dutyPlaces: state.dutyPlaces,
@@ -114,23 +201,22 @@ export function AssignmentsTab() {
                 style={{ background: 'hsl(38 100% 56% / 0.1)', color: 'hsl(38 100% 56%)' }}
               >
                 {p.name} (G{p.grade}, {p.gender[0]})
-                <button onClick={() => { removeAssignment(a.id); toast.success('Removed'); }} className="ml-1 hover:text-destructive transition-colors">×</button>
+                {!readOnly && (
+                  <button type="button" onClick={() => { removeAssignment(a.id); toast.success('Removed'); }} className="ml-1 hover:text-destructive transition-colors">×</button>
+                )}
               </span>
             ) : null;
           })}
           {isEmpty && <span className="text-muted-foreground italic text-xs">Vacant</span>}
         </div>
 
-        {!isFull && (
+        {!isFull && !readOnly && (
           <div className="flex items-center gap-1.5 min-w-[240px] justify-end">
-            <Select value={rowSelections[dp.id] || ''} onValueChange={(v) => setRowSelections((prev) => ({ ...prev, [dp.id]: v }))}>
-              <SelectTrigger className="w-40 h-8 text-xs bg-muted/20 border-border/40"><SelectValue placeholder="Pick prefect..." /></SelectTrigger>
-              <SelectContent>
-                {available.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchablePrefectPicker
+              value={rowSelections[dp.id] || ''}
+              onValueChange={(v) => setRowSelections((prev) => ({ ...prev, [dp.id]: v }))}
+              options={available}
+            />
             <Button variant="outline" size="sm" className="h-8 text-xs border-primary/30 text-primary hover:bg-primary/10" onClick={() => handleAssign(dp.id, sectionId)} disabled={!rowSelections[dp.id]}>
               <UserPlus className="h-3 w-3 mr-1" /> Assign
             </Button>
@@ -146,8 +232,11 @@ export function AssignmentsTab() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-foreground">Assignments</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">Assign prefects to duty places</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {readOnly ? 'View-only — assignments cannot be changed' : 'Assign prefects to duty places'}
+          </p>
         </div>
+        {!readOnly && (
         <div className="flex gap-2">
           <Button size="sm" onClick={handleAutoAssign}>
             <Wand2 className="h-4 w-4 mr-1" /> Auto-Assign
@@ -159,6 +248,7 @@ export function AssignmentsTab() {
             <Trash2 className="h-4 w-4 mr-1" /> Clear All
           </Button>
         </div>
+        )}
       </div>
 
       {/* Leadership Cards */}

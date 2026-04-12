@@ -14,6 +14,30 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_accounts: {
+        Row: {
+          created_at: string
+          id: string
+          password_hash: string
+          role: string
+          username: string
+        }
+        Insert: {
+          created_at?: string
+          id: string
+          password_hash: string
+          role: string
+          username: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          password_hash?: string
+          role?: string
+          username?: string
+        }
+        Relationships: []
+      }
       assignments: {
         Row: {
           assigned_at: string

@@ -1,12 +1,29 @@
 import { create } from 'zustand';
 import { supabase } from '@/integrations/supabase/client';
+import { isSupabaseConfigured } from '@/lib/supabaseEnv';
 import {
   Prefect, Section, DutyPlace, Assignment, ValidationIssue,
-  generateId, calculateLevel, Gender, PointLog,
+  generateId, calculateLevel, Gender, PointLog, DEFAULT_SECTIONS, DEFAULT_DUTY_PLACES,
+  MAX_GAMES_CAPTAINS,
 } from '@/types/prefect';
 
 const BASE_STANDING_POINTS = 1000;
 const STANDINGS_SETTINGS_KEY = 'standings_state';
+const LOCAL_FALLBACK_KEY = 'prefect_store_local_fallback_v1';
+
+function applyLocalFallback() {
+  const local = loadLocalFallbackState();
+  return {
+    prefects: local.prefects,
+    sections: local.sections,
+    dutyPlaces: local.dutyPlaces,
+    assignments: local.assignments,
+    standingsPoints: local.standingsPoints,
+    pointLogs: local.pointLogs,
+    loading: false as const,
+    initialized: true as const,
+  };
+}
 
 interface StandingsState {
   pointsByPrefect: Record<string, number>;
@@ -43,7 +60,7 @@ interface PrefectStore {
   addDutyPlace: (dp: Omit<DutyPlace, 'id'>) => Promise<void>;
   removeDutyPlace: (id: string) => Promise<void>;
   updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => Promise<void>;
-  importDutyPlaces: (dps: Omit<DutyPlace, 'id'>[]) => Promise<void>;
+  importDutyPlaces: (dps: Omit<DutyPlace, 'id'>[]) => Promise<string | null>;
   assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => string | null;
   removeAssignment: (assignmentId: string) => Promise<void>;
   swapAssignments: (a1Id: string, a2Id: string) => void;
@@ -59,6 +76,60 @@ interface PrefectStore {
   getDutyCount: (prefectId: string) => number;
   getPrefectPoints: (prefectId: string) => number;
   applyPointChange: (prefectIds: string[], amount: number, reason: string) => Promise<string | null>;
+}
+
+interface LocalFallbackState {
+  prefects: Prefect[];
+  sections: Section[];
+  dutyPlaces: DutyPlace[];
+  assignments: Assignment[];
+  standingsPoints: Record<string, number>;
+  pointLogs: PointLog[];
+}
+
+function buildDefaultLocalState(): LocalFallbackState {
+  const sections: Section[] = DEFAULT_SECTIONS.map((s) => ({ ...s, dutyPlaceIds: [] }));
+  const dutyPlaces: DutyPlace[] = DEFAULT_DUTY_PLACES.map((dp) => ({ id: generateId(), ...dp }));
+  const sectionsWithDps = sections.map((section) => ({
+    ...section,
+    dutyPlaceIds: dutyPlaces.filter((dp) => dp.sectionId === section.id).map((dp) => dp.id),
+  }));
+  return {
+    prefects: [],
+    sections: sectionsWithDps,
+    dutyPlaces,
+    assignments: [],
+    standingsPoints: {},
+    pointLogs: [],
+  };
+}
+
+function loadLocalFallbackState(): LocalFallbackState {
+  try {
+    const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
+    if (!raw) return buildDefaultLocalState();
+    const parsed = JSON.parse(raw) as Partial<LocalFallbackState>;
+    const defaults = buildDefaultLocalState();
+    return {
+      prefects: Array.isArray(parsed.prefects) ? parsed.prefects : defaults.prefects,
+      sections: Array.isArray(parsed.sections) ? parsed.sections : defaults.sections,
+      dutyPlaces: Array.isArray(parsed.dutyPlaces) ? parsed.dutyPlaces : defaults.dutyPlaces,
+      assignments: Array.isArray(parsed.assignments) ? parsed.assignments : defaults.assignments,
+      standingsPoints: parsed.standingsPoints && typeof parsed.standingsPoints === 'object' ? parsed.standingsPoints : defaults.standingsPoints,
+      pointLogs: Array.isArray(parsed.pointLogs) ? parsed.pointLogs : defaults.pointLogs,
+    };
+  } catch (error) {
+    console.error('Failed to load local fallback state:', error);
+    return buildDefaultLocalState();
+  }
+}
+
+function persistLocalFallbackState(state: LocalFallbackState) {
+  try {
+    localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.error('Failed to persist local fallback state:', error);
+  }
 }
 
 function normalizeStandingsState(prefects: Prefect[], rawValue?: string | null): StandingsState {
@@ -143,6 +214,12 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   loadFromDB: async () => {
     set({ loading: true });
     try {
+      if (!isSupabaseConfigured()) {
+        console.warn('VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY not set — loading local backup data');
+        set(applyLocalFallback());
+        return;
+      }
+
       const [prefectsRes, sectionsRes, dutyPlacesRes, assignmentsRes, standingsRes] = await Promise.all([
         supabase.from('prefects').select('*').eq('active', true),
         supabase.from('sections').select('*'),
@@ -150,6 +227,22 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         supabase.from('assignments').select('*'),
         supabase.from('settings').select('value').eq('key', STANDINGS_SETTINGS_KEY).maybeSingle(),
       ]);
+
+      // Supabase returns { error } without throwing — failed loads were showing empty lists with no fallback
+      const coreError =
+        prefectsRes.error || sectionsRes.error || dutyPlacesRes.error || assignmentsRes.error;
+      if (coreError) {
+        console.error('Supabase load failed, using local backup:', {
+          prefects: prefectsRes.error?.message,
+          sections: sectionsRes.error?.message,
+          dutyPlaces: dutyPlacesRes.error?.message,
+          assignments: assignmentsRes.error?.message,
+        });
+        set(applyLocalFallback());
+        return;
+      }
+
+      const standingsValue = standingsRes.error ? undefined : standingsRes.data?.value;
 
       const prefects: Prefect[] = (prefectsRes.data || []).map((p) => ({
         id: p.id,
@@ -193,7 +286,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         sectionId: dutyPlaces.find((dp) => dp.id === a.duty_place_id)?.sectionId || '',
       }));
 
-      const standings = normalizeStandingsState(prefects, standingsRes.data?.value);
+      const standings = normalizeStandingsState(prefects, standingsValue);
 
       set({
         prefects,
@@ -209,11 +302,15 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       await persistStandingsState(standings.pointsByPrefect, standings.logs);
     } catch (err) {
       console.error('Failed to load from DB:', err);
-      set({ loading: false });
+      set(applyLocalFallback());
     }
   },
 
   addPrefect: async (p) => {
+    if (p.isGamesCaptain) {
+      const gc = get().prefects.filter((x) => x.isGamesCaptain).length;
+      if (gc >= MAX_GAMES_CAPTAINS) return `Maximum ${MAX_GAMES_CAPTAINS} Games Captains allowed`;
+    }
     const { data, error } = await supabase.from('prefects').insert({
       name: p.name, reg_number: p.regNo, grade: p.grade,
       gender: p.gender === 'Male' ? 'M' : 'F',
@@ -227,7 +324,29 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     }).select().single();
     if (error || !data) {
       console.error(error);
-      return error?.message || 'Failed to save prefect';
+      const fallback: Prefect = {
+        id: generateId(),
+        name: p.name,
+        regNo: p.regNo,
+        grade: p.grade,
+        gender: p.gender,
+        level: calculateLevel(p.grade),
+        isHeadPrefect: !!p.isHeadPrefect,
+        isDeputyHeadPrefect: !!p.isDeputyHeadPrefect,
+        isGamesCaptain: !!p.isGamesCaptain,
+      };
+      const nextPoints = { ...get().standingsPoints, [fallback.id]: BASE_STANDING_POINTS };
+      set((s) => ({ prefects: [...s.prefects, fallback], standingsPoints: nextPoints }));
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+      return null;
     }
     const prefect: Prefect = {
       id: data.id, name: data.name, regNo: data.reg_number, grade: data.grade,
@@ -238,10 +357,27 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const nextPoints = { ...get().standingsPoints, [prefect.id]: BASE_STANDING_POINTS };
     set((s) => ({ prefects: [...s.prefects, prefect], standingsPoints: nextPoints }));
     await persistStandingsState(nextPoints, get().pointLogs);
+    const s = get();
+    persistLocalFallbackState({
+      prefects: s.prefects,
+      sections: s.sections,
+      dutyPlaces: s.dutyPlaces,
+      assignments: s.assignments,
+      standingsPoints: s.standingsPoints,
+      pointLogs: s.pointLogs,
+    });
     return null;
   },
 
   updatePrefect: async (id, updates) => {
+    if (updates.isHeadPrefect !== undefined || updates.isDeputyHeadPrefect !== undefined || updates.isGamesCaptain !== undefined) {
+      const current = get().prefects.find((pref) => pref.id === id);
+      const willBeGC = updates.isGamesCaptain ?? current?.isGamesCaptain;
+      if (willBeGC && !current?.isGamesCaptain) {
+        const otherGc = get().prefects.filter((pref) => pref.id !== id && pref.isGamesCaptain).length;
+        if (otherGc >= MAX_GAMES_CAPTAINS) return `Maximum ${MAX_GAMES_CAPTAINS} Games Captains allowed`;
+      }
+    }
     const dbUpdates: Record<string, unknown> = {};
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.regNo !== undefined) dbUpdates.reg_number = updates.regNo;
@@ -257,13 +393,38 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const { error } = await supabase.from('prefects').update(dbUpdates).eq('id', id);
     if (error) {
       console.error(error);
-      return error.message || 'Failed to update prefect';
+      set((s) => ({
+        prefects: s.prefects.map((p) =>
+          p.id === id ? { ...p, ...updates, level: updates.grade ? calculateLevel(updates.grade) : p.level } : p
+        ),
+      }));
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+      return null;
     }
     set((s) => ({
       prefects: s.prefects.map((p) =>
         p.id === id ? { ...p, ...updates, level: updates.grade ? calculateLevel(updates.grade) : p.level } : p
       ),
     }));
+    {
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+    }
     return null;
   },
 
@@ -281,6 +442,11 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   importPrefects: async (prefects) => {
+    const existingGc = get().prefects.filter((p) => p.isGamesCaptain).length;
+    const incomingGc = prefects.filter((p) => p.isGamesCaptain).length;
+    if (existingGc + incomingGc > MAX_GAMES_CAPTAINS) {
+      return `At most ${MAX_GAMES_CAPTAINS} Games Captains allowed (${existingGc} already, ${incomingGc} in import)`;
+    }
     const rows = prefects.map((p) => ({
       name: p.name, reg_number: p.regNo, grade: p.grade,
       gender: p.gender === 'Male' ? 'M' : 'F',
@@ -297,7 +463,32 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const { data, error } = await supabase.from('prefects').insert(rows).select();
     if (error || !data) {
       console.error(error);
-      return error?.message || 'Import failed';
+      const newPrefects: Prefect[] = prefects.map((p) => ({
+        id: generateId(),
+        name: p.name,
+        regNo: p.regNo,
+        grade: p.grade,
+        gender: p.gender,
+        level: calculateLevel(p.grade),
+        isHeadPrefect: !!p.isHeadPrefect,
+        isDeputyHeadPrefect: !!p.isDeputyHeadPrefect,
+        isGamesCaptain: !!p.isGamesCaptain,
+      }));
+      const nextPoints = { ...get().standingsPoints };
+      newPrefects.forEach((prefect) => {
+        nextPoints[prefect.id] = BASE_STANDING_POINTS;
+      });
+      set((s) => ({ prefects: [...s.prefects, ...newPrefects], standingsPoints: nextPoints }));
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+      return null;
     }
     const newPrefects: Prefect[] = data.map((d) => ({
       id: d.id, name: d.name, regNo: d.reg_number, grade: d.grade,
@@ -312,6 +503,17 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     });
     set((s) => ({ prefects: [...s.prefects, ...newPrefects], standingsPoints: nextPoints }));
     await persistStandingsState(nextPoints, get().pointLogs);
+    {
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+    }
     return null;
   },
 
@@ -319,9 +521,32 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const trimmedName = name.trim();
     if (!trimmedName) return 'Section name is required';
     const { data, error } = await supabase.from('sections').insert({ name: trimmedName }).select('id, name, head_prefect_id, co_head_prefect_id').single();
-    if (error) return error.message;
-    if (!data) return 'Section was not created';
+    if (error || !data) {
+      const localSection: Section = { id: generateId(), name: trimmedName, headId: undefined, coHeadId: undefined, dutyPlaceIds: [] };
+      set((s) => ({ sections: [...s.sections, localSection] }));
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+      return null;
+    }
     set((s) => ({ sections: [...s.sections, { id: data.id, name: data.name, headId: data.head_prefect_id || undefined, coHeadId: data.co_head_prefect_id || undefined, dutyPlaceIds: [] }] }));
+    {
+      const s = get();
+      persistLocalFallbackState({
+        prefects: s.prefects,
+        sections: s.sections,
+        dutyPlaces: s.dutyPlaces,
+        assignments: s.assignments,
+        standingsPoints: s.standingsPoints,
+        pointLogs: s.pointLogs,
+      });
+    }
     return null;
   },
 
@@ -420,12 +645,21 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       grade_requirement: dp.gradeRequirement || null,
       same_grade_if_multiple: dp.sameGradeIfMultiple || false,
     }).select().single();
-    if (error || !data) return;
-    const newDp: DutyPlace = { ...dp, id: data.id };
+    const newDp: DutyPlace = { ...dp, id: data?.id || generateId() };
     set((s) => ({
       dutyPlaces: [...s.dutyPlaces, newDp],
-      sections: s.sections.map((sec) => sec.id === dp.sectionId ? { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, data.id] } : sec),
+      sections: s.sections.map((sec) => sec.id === dp.sectionId ? { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, newDp.id] } : sec),
     }));
+    if (error || !data) console.error(error);
+    const s = get();
+    persistLocalFallbackState({
+      prefects: s.prefects,
+      sections: s.sections,
+      dutyPlaces: s.dutyPlaces,
+      assignments: s.assignments,
+      standingsPoints: s.standingsPoints,
+      pointLogs: s.pointLogs,
+    });
   },
 
   removeDutyPlace: async (id) => {
@@ -479,19 +713,20 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       same_grade_if_multiple: dp.sameGradeIfMultiple || false,
     }));
     const { data, error } = await supabase.from('duty_places').insert(rows).select();
-    if (error || !data) { console.error(error); return; }
-    const newDps: DutyPlace[] = data.map((d) => ({
-      id: d.id, name: d.name, sectionId: d.section_id || '',
-      isSpecial: d.type === 'special' || d.type === 'inspection',
-      isMandatory: d.mandatory_slots > 0,
-      requiredGenderBalance: d.required_gender_balance,
-      maxPrefects: d.max_prefects,
-      minPrefects: d.mandatory_slots,
-      genderRequirement: d.gender_requirement || undefined,
-      gradeRequirement: d.grade_requirement || undefined,
-      sameGradeIfMultiple: d.same_grade_if_multiple,
-      mandatorySlots: d.mandatory_slots,
-    }));
+    const newDps: DutyPlace[] = (error || !data)
+      ? dps.map((dp) => ({ ...dp, id: generateId() }))
+      : data.map((d) => ({
+          id: d.id, name: d.name, sectionId: d.section_id || '',
+          isSpecial: d.type === 'special' || d.type === 'inspection',
+          isMandatory: d.mandatory_slots > 0,
+          requiredGenderBalance: d.required_gender_balance,
+          maxPrefects: d.max_prefects,
+          minPrefects: d.mandatory_slots,
+          genderRequirement: d.gender_requirement || undefined,
+          gradeRequirement: d.grade_requirement || undefined,
+          sameGradeIfMultiple: d.same_grade_if_multiple,
+          mandatorySlots: d.mandatory_slots,
+        }));
     set((s) => ({
       dutyPlaces: [...s.dutyPlaces, ...newDps],
       sections: s.sections.map((sec) => {
@@ -499,6 +734,17 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         return newIds.length > 0 ? { ...sec, dutyPlaceIds: [...sec.dutyPlaceIds, ...newIds] } : sec;
       }),
     }));
+    if (error || !data) console.error(error);
+    const s = get();
+    persistLocalFallbackState({
+      prefects: s.prefects,
+      sections: s.sections,
+      dutyPlaces: s.dutyPlaces,
+      assignments: s.assignments,
+      standingsPoints: s.standingsPoints,
+      pointLogs: s.pointLogs,
+    });
+    return null;
   },
 
   getDutyCount: (prefectId: string) => {
@@ -824,6 +1070,15 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   validate: () => {
     const state = get();
     const issues: ValidationIssue[] = [];
+
+    const gamesCaptains = state.prefects.filter((p) => p.isGamesCaptain);
+    if (gamesCaptains.length > MAX_GAMES_CAPTAINS) {
+      issues.push({
+        type: 'error',
+        category: 'leadership_cap',
+        message: `There are ${gamesCaptains.length} Games Captains; at most ${MAX_GAMES_CAPTAINS} are allowed — clear the role on ${gamesCaptains.length - MAX_GAMES_CAPTAINS} prefect(s)`,
+      });
+    }
 
     // Leadership constraints:
     // - A prefect may not lead more than one section
