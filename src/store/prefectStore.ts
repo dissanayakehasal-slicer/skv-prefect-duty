@@ -1082,7 +1082,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
             }
             return true;
           });
-          const best = pickBest(eligible);
+          // Fallback: if strict classroom rules find nobody, fill from any unassigned eligible prefect.
+          const best = pickBest(eligible.length > 0 ? eligible : unassignedPool);
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
             if (useCloudApi()) {
@@ -1223,7 +1224,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
             }
             return true;
           });
-          const best = pickBest(eligible);
+          // Fallback: if strict classroom rules find nobody, fill from any unassigned eligible prefect.
+          const best = pickBest(eligible.length > 0 ? eligible : unassignedPool);
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
             if (useCloudApi()) {
