@@ -452,7 +452,16 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
                 </h3>
               )}
               {canManageStructure && (
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive" onClick={() => { removeSection(section.id); toast.success('Section removed'); }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                onClick={async () => {
+                  const err = await removeSection(section.id);
+                  if (err) toast.error(err);
+                  else toast.success('Section removed');
+                }}
+              >
                 <Trash2 className="h-4 w-4" />
               </Button>
               )}

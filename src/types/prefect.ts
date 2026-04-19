@@ -68,8 +68,15 @@ export function calculateLevel(grade: number): Level {
   return grade <= 5 ? 'Junior' : 'Senior';
 }
 
+/** UUID v4 for client-generated rows (Postgres uses UUID primary keys). */
 export function generateId(): string {
-  return Math.random().toString(36).substring(2, 11);
+  const c = globalThis.crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export const DEFAULT_SECTIONS: Omit<Section, 'dutyPlaceIds'>[] = [

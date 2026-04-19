@@ -145,23 +145,31 @@ export function AssignmentsTab({ readOnly = false }: AssignmentsTabProps) {
   const gamesCaptains = useMemo(() => prefects.filter((p) => p.isGamesCaptain), [prefects]);
 
   const handleAutoAssign = async () => {
-    const result = await autoAssign();
-    toast.success(`Auto-assigned ${result.assigned} (${result.skipped} skipped)`);
-    if (result.vacancies.length > 0) toast.warning(`${result.vacancies.length} vacancies remaining`);
-    if (result.violations.length > 0) toast.warning(`${result.violations.length} violations — check Validation`);
+    try {
+      const result = await autoAssign();
+      toast.success(`Auto-assigned ${result.assigned} (${result.skipped} skipped)`);
+      if (result.vacancies.length > 0) toast.warning(`${result.vacancies.length} vacancies remaining`);
+      if (result.violations.length > 0) toast.warning(`${result.violations.length} violations — check Validation`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Auto-assign failed');
+    }
   };
 
   const handleAutoFill = async () => {
-    const result = await autoFillRemaining();
-    toast.success(`Auto-filled ${result.assigned} (${result.skipped} skipped)`);
-    if (result.vacancies.length > 0) toast.warning(`${result.vacancies.length} vacancies remaining`);
-    if (result.violations.length > 0) toast.warning(`${result.violations.length} issues — check Validation`);
+    try {
+      const result = await autoFillRemaining();
+      toast.success(`Auto-filled ${result.assigned} (${result.skipped} skipped)`);
+      if (result.vacancies.length > 0) toast.warning(`${result.vacancies.length} vacancies remaining`);
+      if (result.violations.length > 0) toast.warning(`${result.violations.length} issues — check Validation`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Auto-fill failed');
+    }
   };
 
-  const handleAssign = (dutyPlaceId: string, sectionId: string) => {
+  const handleAssign = async (dutyPlaceId: string, sectionId: string) => {
     const selectedPrefect = rowSelections[dutyPlaceId];
     if (!selectedPrefect) { toast.error('Select a prefect first'); return; }
-    const err = assignPrefect(selectedPrefect, dutyPlaceId, sectionId);
+    const err = await assignPrefect(selectedPrefect, dutyPlaceId, sectionId);
     if (err) { toast.error(err); return; }
     setRowSelections((prev) => { const next = { ...prev }; delete next[dutyPlaceId]; return next; });
     toast.success('Assigned');

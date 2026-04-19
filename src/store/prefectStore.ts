@@ -57,7 +57,7 @@ interface PrefectStore {
   removePrefect: (id: string) => Promise<string | null>;
   importPrefects: (prefects: Omit<Prefect, 'id' | 'level'>[]) => Promise<string | null>;
   addSection: (name: string) => Promise<string | null>;
-  removeSection: (id: string) => Promise<void>;
+  removeSection: (id: string) => Promise<string | null>;
   renameSection: (id: string, name: string) => Promise<void>;
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
   setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
@@ -65,7 +65,7 @@ interface PrefectStore {
   removeDutyPlace: (id: string) => Promise<void>;
   updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => Promise<void>;
   importDutyPlaces: (dps: Omit<DutyPlace, 'id'>[]) => Promise<string | null>;
-  assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => string | null;
+  assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => Promise<string | null>;
   removeAssignment: (assignmentId: string) => Promise<void>;
   swapAssignments: (a1Id: string, a2Id: string) => void;
   clearAllAssignments: () => Promise<void>;
@@ -639,13 +639,18 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const state = get();
     const sectionDpIds = state.dutyPlaces.filter((dp) => dp.sectionId === id).map((dp) => dp.id);
     if (useCloudApi()) {
-      await backendRpc('section_delete', { id }, getApiJwt());
+      try {
+        await backendRpc('section_delete', { id }, getApiJwt());
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not delete section';
+      }
     }
     set((s) => ({
       sections: s.sections.filter((sec) => sec.id !== id),
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
       assignments: s.assignments.filter((a) => !sectionDpIds.includes(a.dutyPlaceId)),
     }));
+    return null;
   },
 
   renameSection: async (id, name) => {
@@ -882,7 +887,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     return count;
   },
 
-  assignPrefect: (prefectId, dutyPlaceId, sectionId) => {
+  assignPrefect: async (prefectId, dutyPlaceId, sectionId) => {
     const state = get();
     const prefect = state.prefects.find((p) => p.id === prefectId);
     if (!prefect) return 'Prefect not found';
@@ -900,11 +905,16 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const assignment: Assignment = { id: generateId(), prefectId, dutyPlaceId, sectionId };
     set((s) => ({ assignments: [...s.assignments, assignment] }));
     if (useCloudApi()) {
-      void backendRpc(
-        'assignment_insert',
-        { id: assignment.id, prefect_id: prefectId, duty_place_id: dutyPlaceId, assigned_by: 'manual' },
-        getApiJwt(),
-      ).catch((err) => console.error('DB assignment insert error:', err));
+      try {
+        await backendRpc(
+          'assignment_insert',
+          { id: assignment.id, prefect_id: prefectId, duty_place_id: dutyPlaceId, assigned_by: 'manual' },
+          getApiJwt(),
+        );
+      } catch (e) {
+        set((s) => ({ assignments: s.assignments.filter((a) => a.id !== assignment.id) }));
+        return e instanceof Error ? e.message : 'Could not save assignment';
+      }
     }
     return null;
   },
@@ -1027,11 +1037,19 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           const currentFemales = get().assignments.filter((a) => a.dutyPlaceId === dp.id).length - currentMales;
           const needGender = currentMales <= currentFemales ? 'Male' : 'Female';
           const best = pickBest(getPool({ gender: needGender, minGrade, onlyUnassigned: true }));
-          if (best) { const err = get().assignPrefect(best.id, dp.id, dp.sectionId); if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); } }
+          if (best) {
+            const err = await get().assignPrefect(best.id, dp.id, dp.sectionId);
+            if (!err) report.assigned++;
+            else { report.skipped++; report.violations.push(err); }
+          }
           else { report.vacancies.push({ placeName: `${dp.name} (${needGender})`, slotsNeeded: 1 }); }
         } else {
           const best = pickBest(getPool({ gender: genderFilter, minGrade, onlyUnassigned: true }));
-          if (best) { const err = get().assignPrefect(best.id, dp.id, dp.sectionId); if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); } }
+          if (best) {
+            const err = await get().assignPrefect(best.id, dp.id, dp.sectionId);
+            if (!err) report.assigned++;
+            else { report.skipped++; report.violations.push(err); }
+          }
           else { report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 }); }
         }
       }
@@ -1061,14 +1079,20 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           const best = pickBest(eligible);
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
-            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
             if (useCloudApi()) {
-              void backendRpc(
-                'assignment_insert',
-                { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto' },
-                getApiJwt(),
-              ).catch((err) => console.error(err));
+              try {
+                await backendRpc(
+                  'assignment_insert',
+                  { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto' },
+                  getApiJwt(),
+                );
+              } catch (e) {
+                report.skipped++;
+                report.violations.push(e instanceof Error ? e.message : 'Assignment failed');
+                continue;
+              }
             }
+            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
             report.assigned++;
             assignedThisRound = true;
             unassignedPool = getPool({ onlyUnassigned: true });
@@ -1143,7 +1167,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           const needGender = currentMales <= currentFemales ? 'Male' : 'Female';
           const best = pickBest(getPool({ gender: needGender, minGrade, onlyUnassigned: true }));
           if (best) {
-            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+            const err = await get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
           } else {
             report.vacancies.push({ placeName: `${dp.name} (${needGender})`, slotsNeeded: 1 });
@@ -1151,7 +1175,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         } else {
           const best = pickBest(getPool({ gender: genderFilter, minGrade, onlyUnassigned: true }));
           if (best) {
-            const err = get().assignPrefect(best.id, dp.id, dp.sectionId);
+            const err = await get().assignPrefect(best.id, dp.id, dp.sectionId);
             if (!err) report.assigned++; else { report.skipped++; report.violations.push(err); }
           } else {
             report.vacancies.push({ placeName: dp.name, slotsNeeded: 1 });
@@ -1184,14 +1208,20 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           const best = pickBest(eligible);
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
-            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
             if (useCloudApi()) {
-              void backendRpc(
-                'assignment_insert',
-                { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto_fill' },
-                getApiJwt(),
-              ).catch((err) => console.error(err));
+              try {
+                await backendRpc(
+                  'assignment_insert',
+                  { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto_fill' },
+                  getApiJwt(),
+                );
+              } catch (e) {
+                report.skipped++;
+                report.violations.push(e instanceof Error ? e.message : 'Assignment failed');
+                continue;
+              }
             }
+            set((s) => ({ assignments: [...s.assignments, newAssignment] }));
             report.assigned++;
             assignedThisRound = true;
             unassignedPool = getPool({ onlyUnassigned: true });
