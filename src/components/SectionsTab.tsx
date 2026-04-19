@@ -4,11 +4,95 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, MapPin, Pencil, Check, X, Upload, Download } from 'lucide-react';
+import { Plus, Trash2, MapPin, Pencil, Check, X, Upload, Download, ChevronsUpDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
 import { normalizeHeader, parseCsv } from '@/utils/csv';
 import { GRADE_RANGE } from '@/types/prefect';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { cn } from '@/lib/utils';
+
+function SearchableHeadPicker({
+  value,
+  onValueChange,
+  options,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onValueChange: (id: string) => void;
+  options: { id: string; name: string; grade: number; gender: string }[];
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((p) => p.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className={cn(
+            'w-full justify-between bg-muted/20 border-border/40 text-xs font-normal px-2',
+            !value && 'text-muted-foreground',
+          )}
+        >
+          <span className="truncate">
+            {value === '_none'
+              ? '— None —'
+              : selected
+                ? `${selected.name} (G${selected.grade}, ${selected.gender?.[0] ?? '—'})`
+                : placeholder}
+          </span>
+          <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(100vw-2rem,22rem)] p-0" align="start">
+        {open && (
+          <Command shouldFilter>
+            <CommandInput placeholder="Search name…" className="h-9" />
+            <CommandList>
+              <CommandEmpty>No prefect found.</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  value="_none"
+                  onSelect={() => {
+                    onValueChange('_none');
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn('mr-2 h-4 w-4 shrink-0', value === '_none' ? 'opacity-100' : 'opacity-0')} />
+                  — None —
+                </CommandItem>
+                {options.map((p) => (
+                  <CommandItem
+                    key={p.id}
+                    value={`${p.name} ${p.id}`}
+                    onSelect={() => {
+                      onValueChange(p.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={cn('mr-2 h-4 w-4 shrink-0', value === p.id ? 'opacity-100' : 'opacity-0')} />
+                    <span className="truncate">
+                      {p.name} <span className="text-muted-foreground">(G{p.grade}, {p.gender?.[0] ?? '—'})</span>
+                    </span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 interface SectionsTabProps {
   /** Add/remove sections, duty places, CSV import */
@@ -337,18 +421,7 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
               <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
             )}
             {canManageStructure && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0"
-                onClick={async () => {
-                  const err = await removeDutyPlace(dp.id);
-                  if (err) toast.error(err);
-                  else toast.success('Removed');
-                }}
-              >
-                <Trash2 className="h-3 w-3 text-destructive" />
-              </Button>
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { removeDutyPlace(dp.id); toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
             )}
           </div>
           )}
@@ -383,10 +456,10 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
           </div>
           <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.requiredGenderBalance} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, requiredGenderBalance: !!c })} /> Gender Bal.</label>
           <div className="flex gap-1">
-            <Button size="sm" onClick={async () => {
+            <Button size="sm" onClick={() => {
               if (!newDpForm.name) return;
               if (newDpForm.minPrefects > newDpForm.maxPrefects) { toast.error('Min cannot exceed max'); return; }
-              await addDutyPlace({ ...newDpForm });
+              addDutyPlace({ ...newDpForm });
               setNewDpForm({ ...newDpForm, name: '' });
               setShowAddDp(null);
               toast.success('Added');
@@ -483,16 +556,15 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Section Head</label>
                 {canEditDutyContent ? (
-                  <Select value={section.headId || '_none'} onValueChange={async (v) => {
-                    const err = await setSectionHead(section.id, v === '_none' ? undefined : v);
-                    if (err) toast.error(err);
-                  }}>
-                    <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select head..." /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="_none">— None —</SelectItem>
-                      {eligibleHeads.filter((p) => p.id !== section.coHeadId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <SearchableHeadPicker
+                    value={section.headId || '_none'}
+                    placeholder="Select head…"
+                    options={eligibleHeads.filter((p) => p.id !== section.coHeadId)}
+                    onValueChange={async (v) => {
+                      const err = await setSectionHead(section.id, v === '_none' ? undefined : v);
+                      if (err) toast.error(err);
+                    }}
+                  />
                 ) : (
                   <p className="text-sm text-foreground py-2 px-1 rounded-md bg-muted/20 border border-border/40">
                     {section.headId ? (prefects.find((p) => p.id === section.headId)?.name ?? '—') : '—'}
@@ -502,16 +574,15 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block uppercase tracking-wider">Co-Head</label>
                 {canEditDutyContent ? (
-                  <Select value={section.coHeadId || '_none'} onValueChange={async (v) => {
-                    const err = await setSectionCoHead(section.id, v === '_none' ? undefined : v);
-                    if (err) toast.error(err);
-                  }}>
-                    <SelectTrigger className="bg-muted/20 border-border/40"><SelectValue placeholder="Select co-head..." /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="_none">— None —</SelectItem>
-                      {eligibleHeads.filter((p) => p.id !== section.headId).map((p) => <SelectItem key={p.id} value={p.id}>{p.name} (G{p.grade}, {p.gender[0]})</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <SearchableHeadPicker
+                    value={section.coHeadId || '_none'}
+                    placeholder="Select co-head…"
+                    options={eligibleHeads.filter((p) => p.id !== section.headId)}
+                    onValueChange={async (v) => {
+                      const err = await setSectionCoHead(section.id, v === '_none' ? undefined : v);
+                      if (err) toast.error(err);
+                    }}
+                  />
                 ) : (
                   <p className="text-sm text-foreground py-2 px-1 rounded-md bg-muted/20 border border-border/40">
                     {section.coHeadId ? (prefects.find((p) => p.id === section.coHeadId)?.name ?? '—') : '—'}
