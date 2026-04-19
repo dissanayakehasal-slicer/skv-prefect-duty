@@ -3,7 +3,7 @@ import { cloudSyncMode, getApiJwt } from '@/lib/backendEnv';
 import { backendRpc } from '@/lib/backendRpc';
 import {
   Prefect, Section, DutyPlace, Assignment, ValidationIssue,
-  generateId, calculateLevel, Gender, PointLog, DEFAULT_SECTIONS, DEFAULT_DUTY_PLACES,
+  generateId, calculateLevel, Gender, PointLog,
   MAX_GAMES_CAPTAINS,
 } from '@/types/prefect';
 
@@ -92,16 +92,10 @@ interface LocalFallbackState {
 }
 
 function buildDefaultLocalState(): LocalFallbackState {
-  const sections: Section[] = DEFAULT_SECTIONS.map((s) => ({ ...s, dutyPlaceIds: [] }));
-  const dutyPlaces: DutyPlace[] = DEFAULT_DUTY_PLACES.map((dp) => ({ id: generateId(), ...dp }));
-  const sectionsWithDps = sections.map((section) => ({
-    ...section,
-    dutyPlaceIds: dutyPlaces.filter((dp) => dp.sectionId === section.id).map((dp) => dp.id),
-  }));
   return {
     prefects: [],
-    sections: sectionsWithDps,
-    dutyPlaces,
+    sections: [],
+    dutyPlaces: [],
     assignments: [],
     standingsPoints: {},
     pointLogs: [],
