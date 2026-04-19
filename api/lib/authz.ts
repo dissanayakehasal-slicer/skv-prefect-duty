@@ -1,8 +1,8 @@
 import type { JwtUser } from "./jwt.js";
 
 export function canMutateData(user: JwtUser | null): boolean {
-  // Restriction removed: allow all authenticated users to mutate duty data.
-  return !!user;
+  // Restriction removed completely: allow mutation even without auth token.
+  return true;
 }
 
 export function isAdmin(user: JwtUser | null): boolean {
