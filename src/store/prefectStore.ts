@@ -1206,7 +1206,7 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
               try {
                 await backendRpc(
                   'assignment_insert',
-                  { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto_fill' },
+                  { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto' },
                   getApiJwt(),
                 );
               } catch (e) {

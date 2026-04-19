@@ -17,7 +17,13 @@ export async function backendRpc<T = unknown>(
   try {
     json = (await res.json()) as typeof json;
   } catch {
-    throw new Error("Invalid server response");
+    const bodyText = await res.text().catch(() => "");
+    const snippet = bodyText.slice(0, 160).trim();
+    throw new Error(
+      snippet
+        ? `Invalid server response (${res.status}): ${snippet}`
+        : `Invalid server response (${res.status})`,
+    );
   }
   if (!json.ok) {
     throw new Error(json.error || `Request failed (${res.status})`);
