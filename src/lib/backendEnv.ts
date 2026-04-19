@@ -10,10 +10,15 @@ export function getBackendUrl(): string {
 }
 
 /**
- * Use Vercel Postgres + `/api/backend` (default on).
- * Set `VITE_USE_VERCEL_DB=false` for fully offline / browser-only mode during local dev.
+ * Use Vercel Postgres + `/api/backend`.
+ * - Production build: on unless `VITE_USE_VERCEL_DB=false`.
+ * - Vite dev server: off unless `VITE_USE_VERCEL_DB=true`, so local preview defaults to
+ *   browser-only auth (first-admin setup) without needing `vercel dev` or a shared DB.
  */
 export function useVercelPostgresBackend(): boolean {
+  if (import.meta.env.DEV) {
+    return import.meta.env.VITE_USE_VERCEL_DB === "true";
+  }
   return import.meta.env.VITE_USE_VERCEL_DB !== "false";
 }
 
