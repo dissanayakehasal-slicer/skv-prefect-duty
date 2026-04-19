@@ -5,7 +5,7 @@ import { Shield, KeyRound, Sparkles, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { useAuthStore, hydrateAuth } from '@/store/authStore';
-import { isSupabaseConfigured } from '@/lib/supabaseEnv';
+import { isCloudBackendConfigured } from '@/lib/backendEnv';
 
 export function LoginPage() {
   const bootstrapFirstAdmin = useAuthStore((s) => s.bootstrapFirstAdmin);
@@ -97,13 +97,13 @@ export function LoginPage() {
               </p>
               {isSetup && (
                 <p className="text-xs text-muted-foreground text-center max-w-sm mx-auto mt-3 leading-relaxed">
-                  {isSupabaseConfigured() ? (
+                  {isCloudBackendConfigured() ? (
                     <>
-                      If your team already uses this app, you should <strong className="text-foreground font-medium">sign in</strong> with an existing username—not create another first admin. Seeing this on a new browser usually means accounts are not syncing: check that this site uses the same Supabase project (<code className="text-[11px] bg-muted px-1 rounded">VITE_SUPABASE_*</code>) and that the <code className="text-[11px] bg-muted px-1 rounded">app_accounts</code> table exists.
+                      If your team already uses this app, you should <strong className="text-foreground font-medium">sign in</strong> with an existing username—not create another first admin. Everyone must use the same deployed app (same <code className="text-[11px] bg-muted px-1 rounded">POSTGRES_URL</code> / <code className="text-[11px] bg-muted px-1 rounded">JWT_SECRET</code> on Vercel) and run <code className="text-[11px] bg-muted px-1 rounded">vercel/schema.sql</code> on that database once.
                     </>
                   ) : (
                     <>
-                      <strong className="text-foreground font-medium">Login is only saved in this browser.</strong> Other browsers will ask for a new admin until you add Supabase URL and key in <code className="text-[11px] bg-muted px-1 rounded">.env</code> and redeploy.
+                      <strong className="text-foreground font-medium">Login is only saved in this browser.</strong> Other browsers will ask for a new admin until you configure Vercel Postgres + API env vars and redeploy.
                     </>
                   )}
                 </p>

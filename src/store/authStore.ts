@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import type { AuthSession, StoredAccount, UserRole } from '@/types/auth';
 import { hashPassword, verifyPassword } from '@/lib/password';
 import { generateId } from '@/types/prefect';
-import { supabase } from '@/integrations/supabase/client';
-import { isSupabaseConfigured } from '@/lib/supabaseEnv';
+import { useVercelPostgresBackend, setApiJwt, getApiJwt } from '@/lib/backendEnv';
+import { backendRpc } from '@/lib/backendRpc';
 
 const ACCOUNTS_KEY = 'skv_auth_accounts_v1';
 const SESSION_KEY = 'skv_auth_session_v1';
@@ -46,27 +46,13 @@ function writeSession(s: AuthSession | null) {
   else sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
 }
 
-function isUserRole(r: string): r is UserRole {
-  return r === 'admin' || r === 'duty_editor' || r === 'viewer';
-}
-
-function rowToAccount(row: { id: string; username: string; password_hash: string; role: string }): StoredAccount | null {
-  if (!isUserRole(row.role)) return null;
-  return {
-    id: row.id,
-    username: row.username,
-    passwordHash: row.password_hash,
-    role: row.role,
-  };
-}
-
 let hydratePromise: Promise<void> | null = null;
 
 interface AuthState {
   session: AuthSession | null;
   authHydrated: boolean;
   authMode: AuthMode;
-  /** When authMode is remote, mirrors DB rows (including hashes) for login/account ops */
+  cloudAccountsExist: boolean | null;
   remoteAccounts: StoredAccount[] | null;
 
   hasAnyAccount: () => boolean;
@@ -90,10 +76,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   session: readSession(),
   authHydrated: false,
   authMode: 'local',
+  cloudAccountsExist: null,
   remoteAccounts: null,
 
   hasAnyAccount: () => {
     if (!get().authHydrated) return false;
+    if (get().cloudAccountsExist === true) return true;
     return getAccounts(get()).length > 0;
   },
 
@@ -110,17 +98,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (get().authMode === 'local') {
       saveAccountsRaw([account]);
     } else {
-      const { error } = await supabase.from('app_accounts').insert({
-        id: account.id,
-        username: account.username,
-        password_hash: account.passwordHash,
-        role: account.role,
-      });
-      if (error) {
-        console.error(error);
-        return error.message || 'Could not save account to database';
+      try {
+        const data = await backendRpc<{ token: string; user: AuthSession }>('auth_bootstrap', {
+          username: u,
+          password,
+          id,
+        });
+        setApiJwt(data.token);
+        const session: AuthSession = {
+          userId: data.user.userId,
+          username: data.user.username,
+          role: data.user.role,
+        };
+        writeSession(session);
+        set({
+          session,
+          remoteAccounts: [{ id, username: u, passwordHash: '', role: 'admin' }],
+          cloudAccountsExist: true,
+        });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not create account';
       }
-      set({ remoteAccounts: [account] });
     }
 
     const session: AuthSession = { userId: id, username: u, role: 'admin' };
@@ -131,6 +130,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (username, password) => {
     const u = normalizeUsername(username);
+
+    if (useVercelPostgresBackend() && get().authMode === 'remote') {
+      try {
+        const data = await backendRpc<{ token: string; user: AuthSession }>('auth_login', { username: u, password });
+        setApiJwt(data.token);
+        const session: AuthSession = {
+          userId: data.user.userId,
+          username: data.user.username,
+          role: data.user.role,
+        };
+        writeSession(session);
+        let remote: StoredAccount[] = [];
+        if (session.role === 'admin') {
+          const listed = await backendRpc<{ accounts: { id: string; username: string; role: UserRole }[] }>(
+            'auth_accounts_list',
+            {},
+            data.token,
+          );
+          remote = listed.accounts.map((a) => ({
+            id: a.id,
+            username: a.username,
+            passwordHash: '',
+            role: a.role,
+          }));
+        }
+        set({ session, remoteAccounts: remote, cloudAccountsExist: true });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Login failed';
+      }
+    }
+
     const accounts = getAccounts(get());
     const acc = accounts.find((a) => a.username === u);
     if (!acc) return 'Invalid username or password';
@@ -143,6 +174,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
+    setApiJwt(null);
     writeSession(null);
     set({ session: null });
   },
@@ -151,6 +183,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const sess = get().session;
     if (!sess) return 'Not signed in';
     if (newPassword.length < 8) return 'New password must be at least 8 characters';
+
+    if (useVercelPostgresBackend() && get().authMode === 'remote') {
+      try {
+        await backendRpc('auth_password_change', { currentPassword, newPassword });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not update password';
+      }
+    }
+
     const accounts = getAccounts(get());
     const idx = accounts.findIndex((a) => a.id === sess.userId);
     if (idx < 0) return 'Account not found';
@@ -159,23 +201,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const newHash = await hashPassword(newPassword);
     const nextAcc = { ...accounts[idx], passwordHash: newHash };
 
-    if (get().authMode === 'local') {
-      const next = [...accounts];
-      next[idx] = nextAcc;
-      saveAccountsRaw(next);
-    } else {
-      const { error } = await supabase
-        .from('app_accounts')
-        .update({ password_hash: newHash })
-        .eq('id', sess.userId);
-      if (error) {
-        console.error(error);
-        return error.message || 'Could not update password';
-      }
-      const next = [...accounts];
-      next[idx] = nextAcc;
-      set({ remoteAccounts: next });
-    }
+    const next = [...accounts];
+    next[idx] = nextAcc;
+    saveAccountsRaw(next);
     return null;
   },
 
@@ -189,24 +217,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const accounts = getAccounts(get());
     if (accounts.some((a) => a.username === u)) return 'Username already exists';
     const id = generateId();
-    const passwordHash = await hashPassword(password);
-    const newAcc: StoredAccount = { id, username: u, passwordHash, role };
+    const newAcc: StoredAccount = { id, username: u, passwordHash: await hashPassword(password), role };
 
     if (get().authMode === 'local') {
       accounts.push(newAcc);
       saveAccountsRaw(accounts);
     } else {
-      const { error } = await supabase.from('app_accounts').insert({
-        id: newAcc.id,
-        username: newAcc.username,
-        password_hash: newAcc.passwordHash,
-        role: newAcc.role,
-      });
-      if (error) {
-        console.error(error);
-        return error.message || 'Could not create account';
+      try {
+        await backendRpc('auth_account_add', { username: u, password, role, id });
+        set({ remoteAccounts: [...accounts, { id, username: u, passwordHash: '', role }] });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not create account';
       }
-      set({ remoteAccounts: [...accounts, newAcc] });
     }
     return null;
   },
@@ -225,16 +248,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const next = accounts.filter((a) => a.id !== userId);
       saveAccountsRaw(next);
     } else {
-      const { error } = await supabase.from('app_accounts').delete().eq('id', userId);
-      if (error) {
-        console.error(error);
-        return error.message || 'Could not remove account';
+      try {
+        await backendRpc('auth_account_remove', { userId });
+        set({ remoteAccounts: accounts.filter((a) => a.id !== userId) });
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not remove account';
       }
-      set({ remoteAccounts: accounts.filter((a) => a.id !== userId) });
     }
 
     if (get().session?.userId === userId) {
       writeSession(null);
+      setApiJwt(null);
       set({ session: null });
     }
     return null;
@@ -243,42 +267,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isAdmin: () => get().session?.role === 'admin',
 }));
 
-async function fetchRemoteAccounts(): Promise<StoredAccount[]> {
-  const { data, error } = await supabase.from('app_accounts').select('*');
-  if (error) throw error;
-  const out: StoredAccount[] = [];
-  for (const row of data || []) {
-    const acc = rowToAccount(row);
-    if (acc) out.push(acc);
-  }
-  return out;
-}
-
-async function migrateLocalAccountsToRemote(): Promise<void> {
-  const local = loadAccountsRaw();
-  if (local.length === 0) return;
-  const rows = local.map((a) => ({
-    id: a.id,
-    username: a.username,
-    password_hash: a.passwordHash,
-    role: a.role,
-  }));
-  const { error } = await supabase.from('app_accounts').insert(rows);
-  if (error) {
-    console.warn('Could not migrate local accounts to Supabase:', error);
-    throw error;
-  }
-}
-
 export function hydrateAuthSession() {
   const s = readSession();
   if (s) useAuthStore.setState({ session: s });
 }
 
-/**
- * Load session from sessionStorage and sync login accounts from Supabase when configured.
- * Falls back to browser localStorage for accounts if the database is unreachable.
- */
+/** Load session from Vercel API when enabled; otherwise local browser accounts only. */
 export async function hydrateAuth(): Promise<void> {
   hydrateAuthSession();
 
@@ -288,35 +282,71 @@ export async function hydrateAuth(): Promise<void> {
   }
 
   hydratePromise = (async () => {
-    if (!isSupabaseConfigured()) {
-      useAuthStore.setState({ authHydrated: true, authMode: 'local', remoteAccounts: null });
+    if (!useVercelPostgresBackend()) {
+      useAuthStore.setState({ authHydrated: true, authMode: 'local', remoteAccounts: null, cloudAccountsExist: null });
       return;
     }
 
     try {
-      let remote = await fetchRemoteAccounts();
-
-      if (remote.length === 0) {
-        const local = loadAccountsRaw();
-        if (local.length > 0) {
-          try {
-            await migrateLocalAccountsToRemote();
-            remote = await fetchRemoteAccounts();
-          } catch {
-            useAuthStore.setState({ authHydrated: true, authMode: 'local', remoteAccounts: null });
-            return;
+      const { has_accounts } = await backendRpc<{ has_accounts: boolean }>('auth_public_config');
+      const token = getApiJwt();
+      if (token) {
+        try {
+          const me = await backendRpc<{ userId: string; username: string; role: UserRole }>('auth_me', {}, token);
+          const session: AuthSession = {
+            userId: me.userId,
+            username: me.username,
+            role: me.role,
+          };
+          writeSession(session);
+          let remote: StoredAccount[] = [];
+          if (me.role === 'admin') {
+            const listed = await backendRpc<{ accounts: { id: string; username: string; role: UserRole }[] }>(
+              'auth_accounts_list',
+              {},
+              token,
+            );
+            remote = listed.accounts.map((a) => ({
+              id: a.id,
+              username: a.username,
+              passwordHash: '',
+              role: a.role,
+            }));
           }
+          useAuthStore.setState({
+            session,
+            authHydrated: true,
+            authMode: 'remote',
+            remoteAccounts: remote,
+            cloudAccountsExist: has_accounts,
+          });
+        } catch {
+          setApiJwt(null);
+          writeSession(null);
+          useAuthStore.setState({
+            session: null,
+            authHydrated: true,
+            authMode: 'remote',
+            remoteAccounts: [],
+            cloudAccountsExist: has_accounts,
+          });
         }
+      } else {
+        useAuthStore.setState({
+          authHydrated: true,
+          authMode: 'remote',
+          remoteAccounts: [],
+          cloudAccountsExist: has_accounts,
+        });
       }
-
+    } catch (e) {
+      console.warn('API unavailable, using local auth', e);
       useAuthStore.setState({
         authHydrated: true,
-        authMode: 'remote',
-        remoteAccounts: remote,
+        authMode: 'local',
+        remoteAccounts: null,
+        cloudAccountsExist: null,
       });
-    } catch (e) {
-      console.warn('App accounts: using local storage (database unavailable)', e);
-      useAuthStore.setState({ authHydrated: true, authMode: 'local', remoteAccounts: null });
     }
   })();
 

@@ -13,7 +13,7 @@ import { usePrefectStore } from '@/store/prefectStore';
 import { useAuthStore, hydrateAuth } from '@/store/authStore';
 import { FileDown, Users, MapPin, ClipboardList, ShieldCheck, Shield, LogOut, Trophy, Settings, Info } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { isSupabaseConfigured } from '@/lib/supabaseEnv';
+import { isCloudBackendConfigured } from '@/lib/backendEnv';
 import { useShallow } from 'zustand/react/shallow';
 
 const ADMIN_TABS = [
@@ -232,12 +232,10 @@ const Index = () => {
                 </p>
                 <ul className="list-disc pl-4 space-y-1 text-sm">
                   <li>
-                    <strong className="text-foreground">Same data everywhere:</strong> use the same Supabase project in{' '}
-                    <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_URL</code> and{' '}
-                    <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_PUBLISHABLE_KEY</code>, run SQL migrations, and sign in with accounts from the <code className="rounded bg-muted px-1 py-0.5 text-xs">app_accounts</code> table—not a new “first admin” on each browser.
+                    <strong className="text-foreground">Same data everywhere:</strong> use the same cloud backend (Supabase env vars or <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_USE_VERCEL_DB=true</code> with the same Postgres + <code className="rounded bg-muted px-1 py-0.5 text-xs">app_accounts</code>), run SQL from <code className="rounded bg-muted px-1 py-0.5 text-xs">vercel/schema.sql</code> / Supabase migrations, and sign in with existing accounts—not a new “first admin” on each browser.
                   </li>
                   <li>
-                    {!isSupabaseConfigured() ? (
+                    {!isCloudBackendConfigured() ? (
                       <>Supabase env vars are missing in this build, so duty data falls back to browser storage on each device separately.</>
                     ) : authMode === 'local' ? (
                       <>Login accounts are using browser storage on this device (could not load cloud accounts). Duty data may also be an offline copy.</>

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { supabase } from '@/integrations/supabase/client';
-import { isSupabaseConfigured } from '@/lib/supabaseEnv';
+import { cloudSyncMode, getApiJwt } from '@/lib/backendEnv';
+import { backendRpc } from '@/lib/backendRpc';
 import {
   Prefect, Section, DutyPlace, Assignment, ValidationIssue,
   generateId, calculateLevel, Gender, PointLog, DEFAULT_SECTIONS, DEFAULT_DUTY_PLACES,
@@ -9,6 +9,10 @@ import {
 
 const BASE_STANDING_POINTS = 1000;
 const STANDINGS_SETTINGS_KEY = 'standings_state';
+
+function useCloudApi(): boolean {
+  return cloudSyncMode() === 'vercel';
+}
 const LOCAL_FALLBACK_KEY = 'prefect_store_local_fallback_v1';
 
 function applyLocalFallback() {
@@ -176,11 +180,10 @@ function normalizeStandingsState(prefects: Prefect[], rawValue?: string | null):
 
 async function persistStandingsState(pointsByPrefect: Record<string, number>, logs: PointLog[]) {
   const value = JSON.stringify({ pointsByPrefect, logs });
-  const { error } = await supabase
-    .from('settings')
-    .upsert({ key: STANDINGS_SETTINGS_KEY, value }, { onConflict: 'key' });
-
-  if (error) {
+  if (!useCloudApi()) return;
+  try {
+    await backendRpc('settings_upsert_standings', { value });
+  } catch (error) {
     console.error('Failed to persist standings state:', error);
   }
 }
@@ -214,37 +217,42 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   loadFromDB: async () => {
     set({ loading: true });
     try {
-      if (!isSupabaseConfigured()) {
-        console.warn('VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY not set — loading local backup data');
+      const mode = cloudSyncMode();
+      if (!mode) {
+        console.warn('No cloud backend configured — loading local backup data');
         set(applyLocalFallback());
         return;
       }
 
-      const [prefectsRes, sectionsRes, dutyPlacesRes, assignmentsRes, standingsRes] = await Promise.all([
-        supabase.from('prefects').select('*').eq('active', true),
-        supabase.from('sections').select('*'),
-        supabase.from('duty_places').select('*'),
-        supabase.from('assignments').select('*'),
-        supabase.from('settings').select('value').eq('key', STANDINGS_SETTINGS_KEY).maybeSingle(),
-      ]);
+      let prefectsData: unknown[] = [];
+      let sectionsData: unknown[] = [];
+      let dutyPlacesData: unknown[] = [];
+      let assignmentsData: unknown[] = [];
+      let standingsValue: string | undefined;
 
-      // Supabase returns { error } without throwing — failed loads were showing empty lists with no fallback
-      const coreError =
-        prefectsRes.error || sectionsRes.error || dutyPlacesRes.error || assignmentsRes.error;
-      if (coreError) {
-        console.error('Supabase load failed, using local backup:', {
-          prefects: prefectsRes.error?.message,
-          sections: sectionsRes.error?.message,
-          dutyPlaces: dutyPlacesRes.error?.message,
-          assignments: assignmentsRes.error?.message,
-        });
+      try {
+        const pack = await backendRpc<{
+          prefects: unknown[];
+          sections: unknown[];
+          duty_places: unknown[];
+          assignments: unknown[];
+          standings_value: string | null;
+        }>('workspace_load', {}, getApiJwt());
+        prefectsData = pack.prefects || [];
+        sectionsData = pack.sections || [];
+        dutyPlacesData = pack.duty_places || [];
+        assignmentsData = pack.assignments || [];
+        standingsValue = pack.standings_value ?? undefined;
+      } catch (e) {
+        console.error('Workspace load failed, using local backup:', e);
         set(applyLocalFallback());
         return;
       }
 
-      const standingsValue = standingsRes.error ? undefined : standingsRes.data?.value;
-
-      const prefects: Prefect[] = (prefectsRes.data || []).map((p) => ({
+      const prefects: Prefect[] = (prefectsData as {
+        id: string; name: string; reg_number: string; grade: number; gender: string;
+        role: string;
+      }[]).map((p) => ({
         id: p.id,
         name: p.name,
         regNo: p.reg_number,
@@ -256,15 +264,24 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         isGamesCaptain: p.role === 'games_captain',
       }));
 
-      const sections: Section[] = (sectionsRes.data || []).map((s) => ({
+      const sections: Section[] = (sectionsData as {
+        id: string; name: string; head_prefect_id: string | null; co_head_prefect_id: string | null;
+      }[]).map((s) => ({
         id: s.id,
         name: s.name,
         headId: s.head_prefect_id || undefined,
         coHeadId: s.co_head_prefect_id || undefined,
-        dutyPlaceIds: (dutyPlacesRes.data || []).filter((dp) => dp.section_id === s.id).map((dp) => dp.id),
+        dutyPlaceIds: (dutyPlacesData as { id: string; section_id: string | null }[])
+          .filter((dp) => dp.section_id === s.id)
+          .map((dp) => dp.id),
       }));
 
-      const dutyPlaces: DutyPlace[] = (dutyPlacesRes.data || []).map((dp) => ({
+      const dutyPlaces: DutyPlace[] = (dutyPlacesData as {
+        id: string; name: string; section_id: string | null; type: string;
+        mandatory_slots: number; max_prefects: number; required_gender_balance: boolean;
+        gender_requirement: string | null; grade_requirement: string | null;
+        same_grade_if_multiple: boolean;
+      }[]).map((dp) => ({
         id: dp.id,
         name: dp.name,
         sectionId: dp.section_id || '',
@@ -279,7 +296,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
         mandatorySlots: dp.mandatory_slots,
       }));
 
-      const assignments: Assignment[] = (assignmentsRes.data || []).map((a) => ({
+      const assignments: Assignment[] = (assignmentsData as {
+        id: string; prefect_id: string; duty_place_id: string;
+      }[]).map((a) => ({
         id: a.id,
         prefectId: a.prefect_id,
         dutyPlaceId: a.duty_place_id,
@@ -311,8 +330,10 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       const gc = get().prefects.filter((x) => x.isGamesCaptain).length;
       if (gc >= MAX_GAMES_CAPTAINS) return `Maximum ${MAX_GAMES_CAPTAINS} Games Captains allowed`;
     }
-    const { data, error } = await supabase.from('prefects').insert({
-      name: p.name, reg_number: p.regNo, grade: p.grade,
+    const row = {
+      name: p.name,
+      reg_number: p.regNo,
+      grade: p.grade,
       gender: p.gender === 'Male' ? 'M' : 'F',
       role: p.isHeadPrefect
         ? 'head_prefect'
@@ -321,7 +342,25 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           : p.isGamesCaptain
             ? 'games_captain'
             : 'prefect',
-    }).select().single();
+    };
+    let data: {
+      id: string;
+      name: string;
+      reg_number: string;
+      grade: number;
+      role: string;
+    } | null = null;
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        data = (await backendRpc('prefect_insert', { row }, getApiJwt())) as typeof data;
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Insert failed' };
+      }
+    } else {
+      data = null;
+      error = { message: 'Cloud API disabled' };
+    }
     if (error || !data) {
       console.error(error);
       const fallback: Prefect = {
@@ -390,7 +429,16 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       const isGC = updates.isGamesCaptain ?? current?.isGamesCaptain;
       dbUpdates.role = isHP ? 'head_prefect' : isDHP ? 'deputy_head_prefect' : isGC ? 'games_captain' : 'prefect';
     }
-    const { error } = await supabase.from('prefects').update(dbUpdates).eq('id', id);
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        await backendRpc('prefect_update', { id, updates: dbUpdates }, getApiJwt());
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Update failed' };
+      }
+    } else {
+      error = { message: 'Cloud API disabled' };
+    }
     if (error) {
       console.error(error);
       set((s) => ({
@@ -432,7 +480,16 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const state = get();
     if (state.assignments.some((a) => a.prefectId === id)) return 'Cannot delete: prefect has active assignments. Remove those first.';
     if (state.sections.some((s) => s.headId === id || s.coHeadId === id)) return 'Cannot delete: prefect has leadership roles. Remove those first.';
-    const { error } = await supabase.from('prefects').update({ active: false }).eq('id', id);
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        await backendRpc('prefect_deactivate', { id }, getApiJwt());
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Remove failed' };
+      }
+    } else {
+      error = { message: 'Cloud API disabled' };
+    }
     if (error) return 'Failed to remove: ' + error.message;
     const nextPoints = { ...state.standingsPoints };
     delete nextPoints[id];
@@ -460,7 +517,19 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
               : 'prefect'
       ) as 'prefect' | 'head_prefect' | 'deputy_head_prefect' | 'games_captain',
     }));
-    const { data, error } = await supabase.from('prefects').insert(rows).select();
+    let data: { id: string; name: string; reg_number: string; grade: number; gender: string; role: string }[] | null = null;
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        const out = await backendRpc<{ rows: typeof data }>('prefect_batch_insert', { rows }, getApiJwt());
+        data = out.rows as typeof data;
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Import failed' };
+      }
+    } else {
+      data = null;
+      error = { message: 'Cloud API disabled' };
+    }
     if (error || !data) {
       console.error(error);
       const newPrefects: Prefect[] = prefects.map((p) => ({
@@ -520,7 +589,23 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   addSection: async (name) => {
     const trimmedName = name.trim();
     if (!trimmedName) return 'Section name is required';
-    const { data, error } = await supabase.from('sections').insert({ name: trimmedName }).select('id, name, head_prefect_id, co_head_prefect_id').single();
+    let data: {
+      id: string;
+      name: string;
+      head_prefect_id: string | null;
+      co_head_prefect_id: string | null;
+    } | null = null;
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        data = (await backendRpc('section_insert', { name: trimmedName }, getApiJwt())) as typeof data;
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Insert failed' };
+      }
+    } else {
+      data = null;
+      error = { message: 'Cloud API disabled' };
+    }
     if (error || !data) {
       const localSection: Section = { id: generateId(), name: trimmedName, headId: undefined, coHeadId: undefined, dutyPlaceIds: [] };
       set((s) => ({ sections: [...s.sections, localSection] }));
@@ -553,12 +638,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   removeSection: async (id) => {
     const state = get();
     const sectionDpIds = state.dutyPlaces.filter((dp) => dp.sectionId === id).map((dp) => dp.id);
-    if (sectionDpIds.length > 0) {
-      await supabase.from('assignments').delete().in('duty_place_id', sectionDpIds);
-      await supabase.from('duty_places').delete().in('id', sectionDpIds);
+    if (useCloudApi()) {
+      await backendRpc('section_delete', { id }, getApiJwt());
     }
-    await supabase.from('sections').update({ head_prefect_id: null, co_head_prefect_id: null }).eq('id', id);
-    await supabase.from('sections').delete().eq('id', id);
     set((s) => ({
       sections: s.sections.filter((sec) => sec.id !== id),
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.sectionId !== id),
@@ -567,7 +649,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   renameSection: async (id, name) => {
-    await supabase.from('sections').update({ name }).eq('id', id);
+    if (useCloudApi()) {
+      await backendRpc('section_rename', { id, name }, getApiJwt());
+    }
     set((s) => ({ sections: s.sections.map((sec) => sec.id === id ? { ...sec, name } : sec) }));
   },
 
@@ -578,7 +662,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
     // Clearing head is always allowed
     if (!prefectId) {
-      await supabase.from('sections').update({ head_prefect_id: null }).eq('id', sectionId);
+      if (useCloudApi()) {
+        await backendRpc('section_set_head', { sectionId, prefectId: null }, getApiJwt());
+      }
       set((s) => ({ sections: s.sections.map((sec) => sec.id === sectionId ? { ...sec, headId: undefined } : sec) }));
       return null;
     }
@@ -597,7 +683,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       return `Section Head must be at least one grade above ${section.name}`;
     }
 
-    await supabase.from('sections').update({ head_prefect_id: prefectId || null }).eq('id', sectionId);
+    if (useCloudApi()) {
+      await backendRpc('section_set_head', { sectionId, prefectId }, getApiJwt());
+    }
     set((s) => ({ sections: s.sections.map((sec) => sec.id === sectionId ? { ...sec, headId: prefectId } : sec) }));
     return null;
   },
@@ -609,7 +697,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
     // Clearing co-head is always allowed
     if (!prefectId) {
-      await supabase.from('sections').update({ co_head_prefect_id: null }).eq('id', sectionId);
+      if (useCloudApi()) {
+        await backendRpc('section_set_co_head', { sectionId, prefectId: null }, getApiJwt());
+      }
       set((s) => ({ sections: s.sections.map((sec) => sec.id === sectionId ? { ...sec, coHeadId: undefined } : sec) }));
       return null;
     }
@@ -628,13 +718,15 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       return `Co-Section Head must be at least one grade above ${section.name}`;
     }
 
-    await supabase.from('sections').update({ co_head_prefect_id: prefectId || null }).eq('id', sectionId);
+    if (useCloudApi()) {
+      await backendRpc('section_set_co_head', { sectionId, prefectId }, getApiJwt());
+    }
     set((s) => ({ sections: s.sections.map((sec) => sec.id === sectionId ? { ...sec, coHeadId: prefectId } : sec) }));
     return null;
   },
 
   addDutyPlace: async (dp) => {
-    const { data, error } = await supabase.from('duty_places').insert({
+    const insertBody = {
       name: dp.name,
       section_id: dp.sectionId || null,
       type: dp.isSpecial ? 'special' : 'classroom',
@@ -644,7 +736,19 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       gender_requirement: dp.genderRequirement || null,
       grade_requirement: dp.gradeRequirement || null,
       same_grade_if_multiple: dp.sameGradeIfMultiple || false,
-    }).select().single();
+    };
+    let data: { id: string } | null = null;
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        data = (await backendRpc('duty_insert', insertBody, getApiJwt())) as { id: string };
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Insert failed' };
+      }
+    } else {
+      data = null;
+      error = { message: 'Cloud API disabled' };
+    }
     const newDp: DutyPlace = { ...dp, id: data?.id || generateId() };
     set((s) => ({
       dutyPlaces: [...s.dutyPlaces, newDp],
@@ -663,8 +767,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   removeDutyPlace: async (id) => {
-    await supabase.from('assignments').delete().eq('duty_place_id', id);
-    await supabase.from('duty_places').delete().eq('id', id);
+    if (useCloudApi()) {
+      await backendRpc('duty_delete', { id }, getApiJwt());
+    }
     set((s) => ({
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
       assignments: s.assignments.filter((a) => a.dutyPlaceId !== id),
@@ -684,7 +789,11 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     if (updates.genderRequirement !== undefined) dbUpdates.gender_requirement = updates.genderRequirement || null;
     if (updates.gradeRequirement !== undefined) dbUpdates.grade_requirement = updates.gradeRequirement || null;
     if (updates.sameGradeIfMultiple !== undefined) dbUpdates.same_grade_if_multiple = updates.sameGradeIfMultiple;
-    if (Object.keys(dbUpdates).length > 0) await supabase.from('duty_places').update(dbUpdates).eq('id', id);
+    if (Object.keys(dbUpdates).length > 0) {
+      if (useCloudApi()) {
+        await backendRpc('duty_update', { id, updates: dbUpdates }, getApiJwt());
+      }
+    }
     set((s) => {
       const oldDp = s.dutyPlaces.find((dp) => dp.id === id);
       const newDp = { ...oldDp!, ...updates };
@@ -712,7 +821,23 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
       grade_requirement: dp.gradeRequirement || null,
       same_grade_if_multiple: dp.sameGradeIfMultiple || false,
     }));
-    const { data, error } = await supabase.from('duty_places').insert(rows).select();
+    let data: {
+      id: string; name: string; section_id: string | null; type: string;
+      mandatory_slots: number; max_prefects: number; required_gender_balance: boolean;
+      gender_requirement: string | null; grade_requirement: string | null; same_grade_if_multiple: boolean;
+    }[] | null = null;
+    let error: { message: string } | null = null;
+    if (useCloudApi()) {
+      try {
+        const out = await backendRpc<{ rows: typeof data }>('duty_batch_insert', { rows }, getApiJwt());
+        data = out.rows as typeof data;
+      } catch (e) {
+        error = { message: e instanceof Error ? e.message : 'Import failed' };
+      }
+    } else {
+      data = null;
+      error = { message: 'Cloud API disabled' };
+    }
     const newDps: DutyPlace[] = (error || !data)
       ? dps.map((dp) => ({ ...dp, id: generateId() }))
       : data.map((d) => ({
@@ -774,13 +899,20 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
     const assignment: Assignment = { id: generateId(), prefectId, dutyPlaceId, sectionId };
     set((s) => ({ assignments: [...s.assignments, assignment] }));
-    supabase.from('assignments').insert({ id: assignment.id, prefect_id: prefectId, duty_place_id: dutyPlaceId, assigned_by: 'manual' })
-      .then(({ error }) => { if (error) console.error('DB assignment insert error:', error); });
+    if (useCloudApi()) {
+      void backendRpc(
+        'assignment_insert',
+        { id: assignment.id, prefect_id: prefectId, duty_place_id: dutyPlaceId, assigned_by: 'manual' },
+        getApiJwt(),
+      ).catch((err) => console.error('DB assignment insert error:', err));
+    }
     return null;
   },
 
   removeAssignment: async (assignmentId) => {
-    await supabase.from('assignments').delete().eq('id', assignmentId);
+    if (useCloudApi()) {
+      await backendRpc('assignment_delete', { id: assignmentId }, getApiJwt());
+    }
     set((s) => ({ assignments: s.assignments.filter((a) => a.id !== assignmentId) }));
   },
 
@@ -798,12 +930,8 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
   },
 
   clearAllAssignments: async () => {
-    await supabase.from('assignments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    const state = get();
-    for (const sec of state.sections) {
-      if (sec.headId || sec.coHeadId) {
-        await supabase.from('sections').update({ head_prefect_id: null, co_head_prefect_id: null }).eq('id', sec.id);
-      }
+    if (useCloudApi()) {
+      await backendRpc('assignments_clear_all', {}, getApiJwt());
     }
     set((s) => ({ assignments: [], sections: s.sections.map((sec) => ({ ...sec, headId: undefined, coHeadId: undefined })) }));
   },
@@ -934,8 +1062,13 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
             set((s) => ({ assignments: [...s.assignments, newAssignment] }));
-            supabase.from('assignments').insert({ id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto' })
-              .then(({ error }) => { if (error) console.error(error); });
+            if (useCloudApi()) {
+              void backendRpc(
+                'assignment_insert',
+                { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto' },
+                getApiJwt(),
+              ).catch((err) => console.error(err));
+            }
             report.assigned++;
             assignedThisRound = true;
             unassignedPool = getPool({ onlyUnassigned: true });
@@ -1052,8 +1185,13 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
           if (best) {
             const newAssignment: Assignment = { id: generateId(), prefectId: best.id, dutyPlaceId: dp.id, sectionId: dp.sectionId };
             set((s) => ({ assignments: [...s.assignments, newAssignment] }));
-            supabase.from('assignments').insert({ id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto_fill' })
-              .then(({ error }) => { if (error) console.error(error); });
+            if (useCloudApi()) {
+              void backendRpc(
+                'assignment_insert',
+                { id: newAssignment.id, prefect_id: best.id, duty_place_id: dp.id, assigned_by: 'auto_fill' },
+                getApiJwt(),
+              ).catch((err) => console.error(err));
+            }
             report.assigned++;
             assignedThisRound = true;
             unassignedPool = getPool({ onlyUnassigned: true });
@@ -1202,7 +1340,9 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     // (A) Head and Co-Head cannot be the same person.
     for (const sec of state.sections) {
       if (sec.headId && sec.coHeadId && sec.headId === sec.coHeadId) {
-        await supabase.from('sections').update({ co_head_prefect_id: null }).eq('id', sec.id);
+        if (useCloudApi()) {
+          await backendRpc('section_clear_co_head', { sectionId: sec.id }, getApiJwt());
+        }
         fixedSameLeader++;
       }
     }
@@ -1219,10 +1359,12 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     for (const apps of Object.values(leaderAppearances)) {
       if (apps.length <= 1) continue;
       for (const app of apps.slice(1)) {
-        if (app.field === 'head') {
-          await supabase.from('sections').update({ head_prefect_id: null }).eq('id', app.sectionId);
-        } else {
-          await supabase.from('sections').update({ co_head_prefect_id: null }).eq('id', app.sectionId);
+        if (useCloudApi()) {
+          if (app.field === 'head') {
+            await backendRpc('section_clear_head', { sectionId: app.sectionId }, getApiJwt());
+          } else {
+            await backendRpc('section_clear_co_head', { sectionId: app.sectionId }, getApiJwt());
+          }
         }
         clearedLeadership++;
       }
@@ -1232,8 +1374,14 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
     const leaderIds = new Set(Object.keys(leaderAppearances));
     const leaderAssignmentIds = state.assignments.filter((a) => leaderIds.has(a.prefectId)).map((a) => a.id);
     if (leaderAssignmentIds.length > 0) {
-      const { error } = await supabase.from('assignments').delete().in('id', leaderAssignmentIds);
-      if (!error) clearedAssignments = leaderAssignmentIds.length;
+      if (useCloudApi()) {
+        try {
+          await backendRpc('assignments_delete_ids', { ids: leaderAssignmentIds }, getApiJwt());
+          clearedAssignments = leaderAssignmentIds.length;
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     await get().loadFromDB();

@@ -1,4 +1,4 @@
-/** PBKDF2-SHA256 password storage (same format as supabase/functions/admin-auth). */
+/** PBKDF2-SHA256 password storage (same format as api/lib/passwordNode). */
 
 export async function hashPassword(password: string): Promise<string> {
   const encoder = new TextEncoder();
