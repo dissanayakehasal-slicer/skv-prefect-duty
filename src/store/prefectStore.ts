@@ -62,7 +62,7 @@ interface PrefectStore {
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
   setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
   addDutyPlace: (dp: Omit<DutyPlace, 'id'>) => Promise<void>;
-  removeDutyPlace: (id: string) => Promise<string | null>;
+  removeDutyPlace: (id: string) => Promise<void>;
   updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => Promise<void>;
   importDutyPlaces: (dps: Omit<DutyPlace, 'id'>[]) => Promise<string | null>;
   assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => Promise<string | null>;
@@ -767,18 +767,13 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
   removeDutyPlace: async (id) => {
     if (useCloudApi()) {
-      try {
-        await backendRpc('duty_delete', { id }, getApiJwt());
-      } catch (e) {
-        return e instanceof Error ? e.message : 'Could not remove duty place';
-      }
+      await backendRpc('duty_delete', { id }, getApiJwt());
     }
     set((s) => ({
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
       assignments: s.assignments.filter((a) => a.dutyPlaceId !== id),
       sections: s.sections.map((sec) => ({ ...sec, dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id) })),
     }));
-    return null;
   },
 
   updateDutyPlace: async (id, updates) => {
@@ -1056,23 +1051,35 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
     // Phase 4: Classroom duties
     {
-      const classPlaces = get().dutyPlaces.filter((dp) => !dp.isSpecial).sort((a, b) => (getClassGrade(b.name) || 0) - (getClassGrade(a.name) || 0));
+      const resolveDutyGrade = (dp: DutyPlace): number | null => {
+        const byName = getClassGrade(dp.name);
+        if (byName !== null) return byName;
+        const section = get().sections.find((s) => s.id === dp.sectionId);
+        return section ? getSectionGrade(section.name) : null;
+      };
+
+      const classPlaces = get()
+        .dutyPlaces
+        .filter((dp) => !dp.isSpecial)
+        .sort((a, b) => (resolveDutyGrade(b) || 0) - (resolveDutyGrade(a) || 0));
       let unassignedPool = getPool({ onlyUnassigned: true });
       let assignedThisRound = true;
       while (assignedThisRound && unassignedPool.length > 0) {
         assignedThisRound = false;
         for (const dp of classPlaces) {
           if (unassignedPool.length === 0) break;
-          const classGrade = getClassGrade(dp.name);
-          if (!classGrade) continue;
+          const classGrade = resolveDutyGrade(dp);
           const currentCount = get().assignments.filter((a) => a.dutyPlaceId === dp.id).length;
           const max = maxSlots(dp);
           if (currentCount >= max) continue;
 
           const eligible = unassignedPool.filter((p) => {
             if (get().assignments.some((a) => a.prefectId === p.id)) return false;
-            if (classGrade >= 11) return p.grade === 11;
-            if (p.grade <= classGrade) return false;
+            // If grade is known, enforce "senior to class" rule. If unknown, keep generic eligibility.
+            if (classGrade !== null) {
+              if (classGrade >= 11) return p.grade === 11;
+              if (p.grade <= classGrade) return false;
+            }
             return true;
           });
           const best = pickBest(eligible);
@@ -1185,23 +1192,35 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
     // Classroom duties
     {
-      const classPlaces = get().dutyPlaces.filter((dp) => !dp.isSpecial).sort((a, b) => (getClassGrade(b.name) || 0) - (getClassGrade(a.name) || 0));
+      const resolveDutyGrade = (dp: DutyPlace): number | null => {
+        const byName = getClassGrade(dp.name);
+        if (byName !== null) return byName;
+        const section = get().sections.find((s) => s.id === dp.sectionId);
+        return section ? getSectionGrade(section.name) : null;
+      };
+
+      const classPlaces = get()
+        .dutyPlaces
+        .filter((dp) => !dp.isSpecial)
+        .sort((a, b) => (resolveDutyGrade(b) || 0) - (resolveDutyGrade(a) || 0));
       let unassignedPool = getPool({ onlyUnassigned: true });
       let assignedThisRound = true;
       while (assignedThisRound && unassignedPool.length > 0) {
         assignedThisRound = false;
         for (const dp of classPlaces) {
           if (unassignedPool.length === 0) break;
-          const classGrade = getClassGrade(dp.name);
-          if (!classGrade) continue;
+          const classGrade = resolveDutyGrade(dp);
           const currentCount = get().assignments.filter((a) => a.dutyPlaceId === dp.id).length;
           const max = maxSlots(dp);
           if (max <= 0 || currentCount >= max) continue;
 
           const eligible = unassignedPool.filter((p) => {
             if (get().assignments.some((a) => a.prefectId === p.id)) return false;
-            if (classGrade >= 11) return p.grade === 11;
-            if (p.grade <= classGrade) return false;
+            // If grade is known, enforce "senior to class" rule. If unknown, keep generic eligibility.
+            if (classGrade !== null) {
+              if (classGrade >= 11) return p.grade === 11;
+              if (p.grade <= classGrade) return false;
+            }
             return true;
           });
           const best = pickBest(eligible);
