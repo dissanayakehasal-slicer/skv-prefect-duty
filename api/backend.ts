@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { handleOp } from "./lib/ops";
+import { handleOp } from "./lib/ops.js";
 
 function setCors(res: VercelResponse, origin?: string) {
   const o = origin && origin !== "" ? origin : "*";
