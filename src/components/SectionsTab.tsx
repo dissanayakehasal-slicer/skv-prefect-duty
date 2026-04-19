@@ -337,7 +337,18 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
               <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => startEditDp(dp)}><Pencil className="h-3 w-3" /></Button>
             )}
             {canManageStructure && (
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { removeDutyPlace(dp.id); toast.success('Removed'); }}><Trash2 className="h-3 w-3 text-destructive" /></Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={async () => {
+                  const err = await removeDutyPlace(dp.id);
+                  if (err) toast.error(err);
+                  else toast.success('Removed');
+                }}
+              >
+                <Trash2 className="h-3 w-3 text-destructive" />
+              </Button>
             )}
           </div>
           )}
@@ -372,10 +383,10 @@ export function SectionsTab({ canManageStructure = true, canEditDutyContent = tr
           </div>
           <label className="flex items-center gap-1 text-xs"><Checkbox checked={newDpForm.requiredGenderBalance} onCheckedChange={(c) => setNewDpForm({ ...newDpForm, requiredGenderBalance: !!c })} /> Gender Bal.</label>
           <div className="flex gap-1">
-            <Button size="sm" onClick={() => {
+            <Button size="sm" onClick={async () => {
               if (!newDpForm.name) return;
               if (newDpForm.minPrefects > newDpForm.maxPrefects) { toast.error('Min cannot exceed max'); return; }
-              addDutyPlace({ ...newDpForm });
+              await addDutyPlace({ ...newDpForm });
               setNewDpForm({ ...newDpForm, name: '' });
               setShowAddDp(null);
               toast.success('Added');

@@ -62,7 +62,7 @@ interface PrefectStore {
   setSectionHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
   setSectionCoHead: (sectionId: string, prefectId: string | undefined) => Promise<string | null>;
   addDutyPlace: (dp: Omit<DutyPlace, 'id'>) => Promise<void>;
-  removeDutyPlace: (id: string) => Promise<void>;
+  removeDutyPlace: (id: string) => Promise<string | null>;
   updateDutyPlace: (id: string, dp: Partial<DutyPlace>) => Promise<void>;
   importDutyPlaces: (dps: Omit<DutyPlace, 'id'>[]) => Promise<string | null>;
   assignPrefect: (prefectId: string, dutyPlaceId: string, sectionId: string) => Promise<string | null>;
@@ -767,13 +767,18 @@ export const usePrefectStore = create<PrefectStore>()((set, get) => ({
 
   removeDutyPlace: async (id) => {
     if (useCloudApi()) {
-      await backendRpc('duty_delete', { id }, getApiJwt());
+      try {
+        await backendRpc('duty_delete', { id }, getApiJwt());
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Could not remove duty place';
+      }
     }
     set((s) => ({
       dutyPlaces: s.dutyPlaces.filter((dp) => dp.id !== id),
       assignments: s.assignments.filter((a) => a.dutyPlaceId !== id),
       sections: s.sections.map((sec) => ({ ...sec, dutyPlaceIds: sec.dutyPlaceIds.filter((dpId) => dpId !== id) })),
     }));
+    return null;
   },
 
   updateDutyPlace: async (id, updates) => {
